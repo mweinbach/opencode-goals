@@ -8,10 +8,19 @@
   "bin": {
     "goal": "dist/cli.js"
   },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./tui": {
+      "types": "./dist/tui.tsx",
+      "default": "./dist/tui.tsx"
+    }
+  },
   "files": [
     "dist",
-    ".opencode",
-    "src/tui.tsx"
+    ".opencode"
   ],
   "scripts": {
     "build": "tsc && cp src/tui.tsx dist/tui.tsx",
