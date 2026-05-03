@@ -40,35 +40,75 @@ src/
 
 ## Installation
 
-### From npm (when published)
+### From npm (recommended)
 
+Add to your `opencode.json`:
 ```json
 {
   "plugin": ["opencode-goals"]
 }
 ```
 
+Add to your `tui.json`:
+```json
+{
+  "plugin": ["opencode-goals"]
+}
+```
+
+OpenCode auto-installs npm plugins on startup.
+
 ### From local files
 
 ```bash
-git clone https://github.com/yourusername/opencode-goals.git
+git clone https://github.com/mweinbach/opencode-goals.git
 cd opencode-goals
 npm install
 npm run build
 
-# Copy server plugin to project plugins
-cp -r dist .opencode/plugins/opencode-goals
+# For server plugin (auto-discovered from .opencode/plugins/)
+cp .opencode/plugins/opencode-goals.ts ~/.config/opencode/plugins/
 
-# Copy TUI plugin (OpenCode processes JSX at runtime)
-cp src/tui.tsx .opencode/plugins/opencode-goals-tui.tsx
-# Or symlink for development
-ln -s $(pwd)/dist ~/.config/opencode/plugins/opencode-goals
-ln -s $(pwd)/src/tui.tsx ~/.config/opencode/plugins/opencode-goals-tui.tsx
+# For TUI plugin (must be listed in tui.json)
+cp src/tui.tsx ~/.config/opencode/plugins/opencode-goals-tui.tsx
+```
+
+Then add to `~/.config/opencode/tui.json`:
+```json
+{
+  "plugin": [
+    "./plugins/opencode-goals-tui.tsx"
+  ]
+}
 ```
 
 ## TUI Plugin
 
-The TUI plugin (`tui.tsx`) adds visual goal tracking directly into OpenCode's terminal interface:
+The TUI plugin (`tui.tsx`) adds visual goal tracking directly into OpenCode's terminal interface.
+
+**Important:** TUI plugins must be explicitly registered in `tui.json`. They are NOT auto-discovered like server plugins.
+
+### Installation
+
+Via npm (package exports handle both server and TUI):
+```json
+// tui.json
+{
+  "plugin": ["opencode-goals"]
+}
+```
+
+Or via file path:
+```json
+// tui.json
+{
+  "plugin": [
+    "./plugins/opencode-goals-tui.tsx"
+  ]
+}
+```
+
+### Features
 
 ### Sidebar Widget
 - **Active goal display** in the sidebar with status icon, objective, and progress
