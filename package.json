@@ -16,7 +16,8 @@
   "scripts": {
     "build": "tsc && cp src/tui.tsx dist/tui.tsx",
     "dev": "tsc --watch",
-    "cli": "bun src/cli.ts"
+    "cli": "bun src/cli.ts",
+    "prepublishOnly": "npm run build"
   },
   "keywords": [
     "opencode",
@@ -26,7 +27,16 @@
     "codex",
     "goal-mode"
   ],
+  "author": "mweinbach",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mweinbach/opencode-goals.git"
+  },
+  "homepage": "https://github.com/mweinbach/opencode-goals#readme",
+  "bugs": {
+    "url": "https://github.com/mweinbach/opencode-goals/issues"
+  },
   "peerDependencies": {
     "@opencode-ai/plugin": "^1.0.0"
   },
