@@ -1,6 +1,6 @@
 {
   "name": "opencode-goals",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Persistent goal tracking plugin for OpenCode - Codex Goal Mode implementation",
   "type": "module",
   "main": "dist/index.js",
