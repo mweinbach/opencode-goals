@@ -17,6 +17,7 @@ import {
   handleTurnStarted,
   accountGoalProgress,
   handleBudgetLimitSteering,
+  injectPendingBudgetLimitSystemPrompt,
   isCompactionBlockingContinuation,
   markCompactionFinished,
   markCompactionStarted,
@@ -115,6 +116,15 @@ export const OpenCodeGoalsPlugin: Plugin = async ({ client }) => {
           await logGoalMetric(client, 'goal.budget_limited', updated);
         }
       }
+    },
+
+    'experimental.chat.system.transform': async (input, output) => {
+      if (!input.sessionID) return;
+
+      const state = runtimeStates.get(input.sessionID);
+      if (!state) return;
+
+      injectPendingBudgetLimitSystemPrompt(state, input.sessionID, output.system);
     },
 
     'experimental.session.compacting': async (input, output) => {

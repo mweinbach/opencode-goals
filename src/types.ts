@@ -150,6 +150,7 @@ export interface OpencodeClient {
       body: {
         noReply?: boolean;
         agent?: string;
+        system?: string;
         parts: Array<{ type: string; text: string }>;
         tools?: Record<string, boolean>;
       };

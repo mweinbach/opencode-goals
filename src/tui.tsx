@@ -406,7 +406,8 @@ const tui: TuiPlugin = async (api) => {
       sessionID: next.threadId,
       directory: api.state.path.directory,
       noReply: false,
-      parts: [{ type: 'text', text: prompt }],
+      system: prompt,
+      parts: [{ type: 'text', text: 'Continue.' }],
     };
 
     if (typeof sessionClient.promptAsync === 'function') {

@@ -213,13 +213,13 @@ Goal removed after counters are returned to the model
 Three carefully crafted prompt surfaces shape model behavior:
 
 ### 1. Continuation Prompt
-Auto-injected when session is idle and goal is active. Includes:
+Auto-injected when session is idle and goal is active. OpenCode sees a tiny visible `Continue.` prompt while the full goal instructions are passed through the prompt `system` field. Includes:
 - `<untrusted_objective>` wrapper (XML-escaped, prevents prompt injection)
 - Budget summary (time, tokens used, remaining)
 - **Completion audit checklist**: model must verify every requirement against concrete evidence before marking complete
 
 ### 2. Budget Limit Prompt
-Injected once when `tokens_used >= token_budget`. Instructs model to wrap up without starting new work.
+Injected once through `experimental.chat.system.transform` after `tokens_used >= token_budget`. Instructs model to wrap up without starting new work.
 
 ### 3. Tool Descriptions
 - `create_goal`: "Create a goal only when explicitly requested..."
@@ -235,9 +235,12 @@ This plugin operates within OpenCode's plugin API boundaries. These Codex featur
 | Turn start/finish hooks | `tool.execute.after` + `session.idle` |
 | Interrupt → pause | Detected from aborted message/part events when OpenCode emits them; `/goal pause` and TUI pause remain explicit fallbacks |
 | Native continuation turns | Simulated via `session.prompt()` |
-| Invisible developer-role prompt injection | Simulated with plugin-safe session prompts |
+| Invisible developer-role continuation prompt | Simulated with a tiny visible `Continue.` prompt plus hidden-ish prompt `system` instructions |
+| Active-turn budget-limit injection | Simulated with a one-shot `experimental.chat.system.transform` injection on the next model step |
 
 During OpenCode compaction, the plugin injects escaped goal context and suppresses its own idle continuation while compaction is in progress. OpenCode's built-in post-compaction continuation remains responsible for finishing the compacted turn.
+
+True Codex-style active token-stream developer-role injection is not exposed by OpenCode's plugin API, so exact prompt-role parity would require OpenCode core support.
 
 ## Development
 

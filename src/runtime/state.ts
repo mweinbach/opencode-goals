@@ -2,7 +2,6 @@ import type {
   GoalAccountingSnapshot,
   TokenUsage,
   ThreadGoal,
-  ThreadGoalAccountingMode,
 } from '../types.js';
 import {
   getThreadGoal,
@@ -24,6 +23,7 @@ import { buildContinuationPrompt, buildBudgetLimitPrompt } from '../prompts/buil
 export interface GoalRuntimeState {
   accounting: GoalAccountingSnapshot;
   budgetLimitReportedGoalId: string | null;
+  pendingBudgetLimitGoalId: string | null;
   continuationTurnId: string | null;
   continuationSuppressed: boolean;
   compactionInProgress: boolean;
@@ -37,6 +37,7 @@ export function createGoalRuntimeState(): GoalRuntimeState {
   return {
     accounting: createFreshAccountingSnapshot(),
     budgetLimitReportedGoalId: null,
+    pendingBudgetLimitGoalId: null,
     continuationTurnId: null,
     continuationSuppressed: false,
     compactionInProgress: false,
@@ -133,27 +134,39 @@ export async function accountGoalProgress(
 
 export async function handleBudgetLimitSteering(
   state: GoalRuntimeState,
-  client: any,
+  _client: any,
   sessionId: string
 ): Promise<void> {
   const goal = getThreadGoal(sessionId);
   if (!goal || goal.status !== 'budget_limited') return;
   if (state.budgetLimitReportedGoalId === goal.goalId) return;
 
-  const prompt = buildBudgetLimitPrompt(goal);
+  state.pendingBudgetLimitGoalId = goal.goalId;
+}
 
-  try {
-    await client.session.prompt({
-      path: { id: sessionId },
-      body: {
-        noReply: true,
-        parts: [{ type: 'text', text: prompt }],
-      },
-    });
-    state.budgetLimitReportedGoalId = goal.goalId;
-  } catch {
-    // Silently fail injection
+export function injectPendingBudgetLimitSystemPrompt(
+  state: GoalRuntimeState,
+  sessionId: string,
+  system: string[]
+): boolean {
+  const pendingGoalId = state.pendingBudgetLimitGoalId;
+  if (!pendingGoalId) return false;
+
+  const goal = getThreadGoal(sessionId);
+  if (
+    !goal ||
+    goal.goalId !== pendingGoalId ||
+    goal.status !== 'budget_limited' ||
+    state.budgetLimitReportedGoalId === goal.goalId
+  ) {
+    state.pendingBudgetLimitGoalId = null;
+    return false;
   }
+
+  system.push(buildBudgetLimitPrompt(goal));
+  state.budgetLimitReportedGoalId = goal.goalId;
+  state.pendingBudgetLimitGoalId = null;
+  return true;
 }
 
 export async function handleTurnFinished(
@@ -170,7 +183,7 @@ export async function handleTurnFinished(
       'suppressed'
     );
     if (shouldSteer) {
-      await handleBudgetLimitSteering(state, { session: { prompt: async () => ({}) } } as any, sessionId);
+      await handleBudgetLimitSteering(state, null, sessionId);
     }
   }
 
@@ -263,12 +276,12 @@ export async function maybeContinueGoal(
   }
 
   try {
-    // Inject continuation prompt as a no-reply message
     await client.session.prompt({
       path: { id: sessionId },
       body: {
         noReply: false, // This triggers a response (continuation turn)
-        parts: [{ type: 'text', text: candidate.items[0].content }],
+        system: candidate.items[0].content,
+        parts: [{ type: 'text', text: 'Continue.' }],
       },
     });
 
@@ -277,6 +290,9 @@ export async function maybeContinueGoal(
     state.toolsExecutedThisTurn = 0;
     return true;
   } catch {
+    state.continuationTurnId = null;
+    state.isContinuationTurn = false;
+    state.toolsExecutedThisTurn = 0;
     return false;
   }
 }
@@ -299,6 +315,7 @@ async function getContinuationCandidate(
 export function resetRuntimeState(state: GoalRuntimeState): void {
   state.accounting = createFreshAccountingSnapshot();
   state.budgetLimitReportedGoalId = null;
+  state.pendingBudgetLimitGoalId = null;
   state.continuationTurnId = null;
   state.continuationSuppressed = false;
   state.compactionInProgress = false;

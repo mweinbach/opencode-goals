@@ -264,11 +264,14 @@ test('tui create goal opens a new session and starts the goal turn from home', a
       sessionID: 'new-session',
       directory: tempDir,
       noReply: false,
+      parts: [{ type: 'text', text: 'Continue.' }],
     });
-    expect(prompts[0].parts[0].text).toContain(
+    const systemPrompt = String(prompts[0].system ?? '');
+    expect(systemPrompt).toContain(
       '<untrusted_objective>\nWrite tests for goal creation\n</untrusted_objective>'
     );
-    expect(prompts[0].parts[0].text).toContain('Token budget: 2500');
+    expect(systemPrompt).toContain('Token budget: 2500');
+    expect(prompts[0].parts[0].text).not.toContain('<untrusted_objective>');
     expect(toasts[0]).toMatchObject({
       variant: 'success',
       message: 'Goal thread started: Write tests for goal creation',

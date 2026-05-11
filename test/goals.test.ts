@@ -552,7 +552,134 @@ test('slash pause accounts usage and slash resume queues continuation', async ()
 
   expect(getThreadGoal('slash-thread')?.status).toBe('active');
   expect(prompts).toHaveLength(1);
+  expect((prompts[0] as any).body.parts).toEqual([{ type: 'text', text: 'Continue.' }]);
+  expect((prompts[0] as any).body.system).toContain(
+    '<untrusted_objective>\npause and resume from slash\n</untrusted_objective>'
+  );
+  expect((prompts[0] as any).body.parts[0].text).not.toContain('<untrusted_objective>');
   expect(resumeOutput.parts[0].text).toContain('Goal resumed and continuation queued');
+});
+
+test('budget limit steering is injected once through system transform', async () => {
+  initializeSchema();
+  replaceThreadGoal('budget-transform-thread', 'wrap up under budget', 'active', 10);
+
+  const latestMessage = {
+    info: {
+      id: 'assistant-budget',
+      role: 'assistant',
+      tokens: {
+        input: 20,
+        output: 5,
+        reasoning: 0,
+        cache: { read: 0, write: 0 },
+      },
+    },
+    parts: [],
+  };
+  const prompts: unknown[] = [];
+
+  const mod = await import('../src/index.js');
+  const hooks = await mod.default.server({
+    client: {
+      app: {
+        log: async () => ({}),
+      },
+      session: {
+        messages: async () => ({ data: [latestMessage] }),
+        prompt: async (input: unknown) => {
+          prompts.push(input);
+          return {};
+        },
+      },
+    },
+  } as any);
+
+  await hooks.event?.({
+    event: {
+      type: 'message.updated',
+      properties: {
+        sessionID: 'budget-transform-thread',
+        info: latestMessage.info,
+      },
+    } as any,
+  });
+
+  expect(getThreadGoal('budget-transform-thread')?.status).toBe('budget_limited');
+  expect(prompts).toHaveLength(0);
+
+  const firstOutput = { system: ['base system'] };
+  await hooks['experimental.chat.system.transform']?.(
+    { sessionID: 'budget-transform-thread' } as any,
+    firstOutput as any
+  );
+
+  expect(firstOutput.system).toHaveLength(2);
+  expect(firstOutput.system[1]).toContain('The active thread goal has reached its token budget.');
+  expect(firstOutput.system[1]).toContain(
+    '<untrusted_objective>\nwrap up under budget\n</untrusted_objective>'
+  );
+
+  const secondOutput = { system: ['base system'] };
+  await hooks['experimental.chat.system.transform']?.(
+    { sessionID: 'budget-transform-thread' } as any,
+    secondOutput as any
+  );
+
+  expect(secondOutput.system).toEqual(['base system']);
+});
+
+test('stale pending budget steering is discarded after goal replacement', async () => {
+  initializeSchema();
+  replaceThreadGoal('budget-replace-thread', 'old budgeted goal', 'active', 10);
+
+  const latestMessage = {
+    info: {
+      id: 'assistant-budget-replace',
+      role: 'assistant',
+      tokens: {
+        input: 12,
+        output: 1,
+        reasoning: 0,
+        cache: { read: 0, write: 0 },
+      },
+    },
+    parts: [],
+  };
+
+  const mod = await import('../src/index.js');
+  const hooks = await mod.default.server({
+    client: {
+      app: {
+        log: async () => ({}),
+      },
+      session: {
+        messages: async () => ({ data: [latestMessage] }),
+        prompt: async () => ({}),
+      },
+    },
+  } as any);
+
+  await hooks.event?.({
+    event: {
+      type: 'message.updated',
+      properties: {
+        sessionID: 'budget-replace-thread',
+        info: latestMessage.info,
+      },
+    } as any,
+  });
+
+  expect(getThreadGoal('budget-replace-thread')?.status).toBe('budget_limited');
+  replaceThreadGoal('budget-replace-thread', 'new active goal', 'active', null);
+
+  const output = { system: ['base system'] };
+  await hooks['experimental.chat.system.transform']?.(
+    { sessionID: 'budget-replace-thread' } as any,
+    output as any
+  );
+
+  expect(output.system).toEqual(['base system']);
 });
 
 test('compaction context preserves goal state and blocks continuation while compacting', async () => {
@@ -618,4 +745,9 @@ test('compaction context preserves goal state and blocks continuation while comp
   });
 
   expect(prompts).toHaveLength(1);
+  expect((prompts[0] as any).body.parts).toEqual([{ type: 'text', text: 'Continue.' }]);
+  expect((prompts[0] as any).body.system).toContain(
+    '<untrusted_objective>\ncompact &lt;goal&gt; &amp; preserve\n</untrusted_objective>'
+  );
+  expect((prompts[0] as any).body.parts[0].text).not.toContain('<untrusted_objective>');
 });
