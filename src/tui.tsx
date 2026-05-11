@@ -8,6 +8,7 @@ import {
   replaceThreadGoal,
   updateThreadGoal,
 } from './db/goals.js';
+import { buildContinuationPrompt } from './prompts/builders.js';
 import { validateThreadGoalObjective } from './types.js';
 import type { ThreadGoal } from './types.js';
 
@@ -24,26 +25,49 @@ const tui: TuiPlugin = async (api) => {
   const [goal, setGoal] = createSignal<GoalState | null>(null);
   const resumePrompted = new Set<string>();
 
+  function setGoalState(next: GoalState | null): void {
+    setGoal((current) => (sameGoal(current, next) ? current : next));
+  }
+
   async function currentSessionId(): Promise<string | null> {
     const route = api.route.current;
     if (route.name === 'session' && typeof route.params?.sessionID === 'string') {
       return route.params.sessionID;
     }
+    return null;
+  }
 
-    const sessions = await api.client.session.list();
-    const currentSession = sessions.data?.find((session: any) => session.status === 'active');
-    return currentSession?.id ?? null;
+  async function ensureGoalSession(objective: string): Promise<{ sessionId: string; created: boolean }> {
+    const current = await currentSessionId();
+    if (current) return { sessionId: current, created: false };
+
+    const created = await api.client.session.create({
+      directory: api.state.path.directory,
+      title: `Goal: ${truncate(objective, 80)}`,
+    });
+
+    if ((created as any).error) {
+      throw new Error('Creating a session failed');
+    }
+
+    const sessionId = (created as any).data?.id;
+    if (typeof sessionId !== 'string') {
+      throw new Error('Creating a session did not return an id');
+    }
+
+    api.route.navigate('session', { sessionID: sessionId });
+    return { sessionId, created: true };
   }
 
   async function fetchGoal(sessionId?: string): Promise<void> {
     const id = sessionId ?? (await currentSessionId());
     if (!id) {
-      setGoal(null);
+      setGoalState(null);
       return;
     }
 
     const next = getThreadGoal(id);
-    setGoal(next);
+    setGoalState(next);
     maybePromptResume(next);
   }
 
@@ -123,7 +147,6 @@ const tui: TuiPlugin = async (api) => {
     order: 100,
     slots: {
       sidebar_content(_ctx, props) {
-        void fetchGoal(props.session_id);
         const current = goal();
         if (!current || current.threadId !== props.session_id) {
           return (
@@ -168,7 +191,6 @@ const tui: TuiPlugin = async (api) => {
         );
       },
       session_prompt_right(_ctx, props) {
-        void fetchGoal(props.session_id);
         const current = goal();
         if (!current || current.threadId !== props.session_id || current.status !== 'active') {
           return null;
@@ -204,8 +226,7 @@ const tui: TuiPlugin = async (api) => {
 
   async function createGoal(objective: string): Promise<void> {
     try {
-      const sessionId = await currentSessionId();
-      if (!sessionId) return;
+      const { sessionId, created } = await ensureGoalSession(objective);
 
       const existing = getThreadGoal(sessionId);
       if (existing) {
@@ -213,11 +234,14 @@ const tui: TuiPlugin = async (api) => {
         return;
       }
 
-      createOrReplaceGoal(sessionId, objective);
+      const next = createOrReplaceGoal(sessionId, objective);
+      const started = await startGoalTurnIfIdle(next).catch(() => false);
       await fetchGoal(sessionId);
       api.ui.toast({
         variant: 'success',
-        message: `Goal created: ${truncate(objective, 40)}`,
+        message: started
+          ? `${created ? 'Goal thread started' : 'Goal started'}: ${truncate(objective, 40)}`
+          : `Goal created: ${truncate(objective, 40)}`,
         duration: 3000,
       });
     } catch {
@@ -257,10 +281,50 @@ const tui: TuiPlugin = async (api) => {
     }
   }
 
-  function createOrReplaceGoal(sessionId: string, objective: string): void {
+  function createOrReplaceGoal(sessionId: string, objective: string): ThreadGoal {
     validateThreadGoalObjective(objective);
-    replaceThreadGoal(sessionId, objective, 'active', null);
+    const next = replaceThreadGoal(sessionId, objective, 'active', null);
     resumePrompted.delete(sessionId);
+    return next;
+  }
+
+  async function startGoalTurnIfIdle(next: ThreadGoal): Promise<boolean> {
+    const status = api.state.session.status(next.threadId);
+    if (status && status.type !== 'idle') return false;
+
+    const prompt = buildContinuationPrompt(next);
+    const sessionClient = api.client.session as any;
+    const payload = {
+      sessionID: next.threadId,
+      directory: api.state.path.directory,
+      noReply: false,
+      parts: [{ type: 'text', text: prompt }],
+    };
+
+    if (typeof sessionClient.promptAsync === 'function') {
+      await sessionClient.promptAsync(payload);
+    } else {
+      await sessionClient.prompt(payload);
+    }
+
+    return true;
+  }
+
+  async function replaceExistingGoal(sessionId: string, objective: string): Promise<void> {
+    try {
+      const next = createOrReplaceGoal(sessionId, objective);
+      const started = await startGoalTurnIfIdle(next).catch(() => false);
+      await fetchGoal(sessionId);
+      api.ui.toast({
+        variant: 'success',
+        message: started
+          ? `Goal replaced and started: ${truncate(objective, 40)}`
+          : `Goal replaced: ${truncate(objective, 40)}`,
+        duration: 3000,
+      });
+    } catch {
+      api.ui.toast({ variant: 'error', message: 'Failed to replace goal', duration: 3000 });
+    }
   }
 
   function confirmReplaceGoal(sessionId: string, objective: string): void {
@@ -269,19 +333,8 @@ const tui: TuiPlugin = async (api) => {
         title="Replace current goal?"
         message="This session already has a goal. Replacing it resets token and time accounting."
         onConfirm={() => {
-          try {
-            createOrReplaceGoal(sessionId, objective);
-            void fetchGoal(sessionId);
-            api.ui.toast({
-              variant: 'success',
-              message: `Goal replaced: ${truncate(objective, 40)}`,
-              duration: 3000,
-            });
-          } catch {
-            api.ui.toast({ variant: 'error', message: 'Failed to replace goal', duration: 3000 });
-          } finally {
-            api.ui.dialog.clear();
-          }
+          api.ui.dialog.clear();
+          void replaceExistingGoal(sessionId, objective);
         }}
         onCancel={() => {
           api.ui.dialog.clear();
@@ -447,4 +500,17 @@ function formatTime(seconds: number): string {
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
   return `${hours}h ${minutes}m`;
+}
+
+function sameGoal(left: GoalState | null, right: GoalState | null): boolean {
+  if (left === right) return true;
+  if (!left || !right) return false;
+  return (
+    left.threadId === right.threadId &&
+    left.objective === right.objective &&
+    left.status === right.status &&
+    left.tokenBudget === right.tokenBudget &&
+    left.tokensUsed === right.tokensUsed &&
+    left.timeUsedSeconds === right.timeUsedSeconds
+  );
 }

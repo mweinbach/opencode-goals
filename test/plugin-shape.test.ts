@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { closeDb, setDbPathForTests } from '../src/db/connection.js';
+import { getThreadGoal } from '../src/db/goals.js';
 
 ensureRuntimePluginSupport();
 
@@ -109,6 +110,142 @@ test('tui plugin registers goal commands and host slots', async () => {
     );
     expect(slots[0].slots.sidebar_content).toBeFunction();
     expect(slots[0].slots.session_prompt_right).toBeFunction();
+  } finally {
+    for (const dispose of disposers) dispose();
+    closeDb();
+    setDbPathForTests(null);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('tui create goal opens a new session and starts the goal turn from home', async () => {
+  const tempDir = mkdtempSync(join(tmpdir(), 'opencode-goals-tui-create-test-'));
+  setDbPathForTests(join(tempDir, 'goals.db'));
+
+  const mod = await import('../src/tui.tsx');
+  const layers: any[] = [];
+  const disposers: Array<() => void> = [];
+  const navigations: any[] = [];
+  const sessionCreates: any[] = [];
+  const prompts: any[] = [];
+  const toasts: any[] = [];
+  let promptConfirm: ((value: string) => void) | undefined;
+
+  const api: any = {
+    route: {
+      current: { name: 'home' },
+      navigate(name: string, params?: Record<string, unknown>) {
+        navigations.push({ name, params });
+        this.current = { name, params };
+      },
+    },
+    client: {
+      session: {
+        create: async (input: unknown) => {
+          sessionCreates.push(input);
+          return { data: { id: 'new-session' } };
+        },
+        promptAsync: async (input: unknown) => {
+          prompts.push(input);
+          return {};
+        },
+      },
+    },
+    state: {
+      path: {
+        directory: tempDir,
+      },
+      session: {
+        status: () => ({ type: 'idle' }),
+      },
+    },
+    tuiConfig: {
+      keybinds: {
+        gather: () => [],
+      },
+    },
+    keymap: {
+      registerLayer(layer: any) {
+        layers.push(layer);
+        return () => undefined;
+      },
+    },
+    slots: {
+      register() {
+        return 'test-slots';
+      },
+    },
+    ui: {
+      DialogPrompt: (props: any) => {
+        promptConfirm = props.onConfirm;
+        return null;
+      },
+      DialogConfirm: () => null,
+      DialogSelect: () => null,
+      dialog: {
+        replace: (render: () => unknown) => {
+          render();
+        },
+        clear: () => undefined,
+        setSize: () => undefined,
+        size: 'medium',
+        depth: 0,
+        open: false,
+      },
+      toast: (input: unknown) => {
+        toasts.push(input);
+      },
+    },
+    theme: {
+      current: {
+        textMuted: {},
+        text: {},
+        success: {},
+        error: {},
+        warning: {},
+      },
+    },
+    event: {
+      on: () => () => undefined,
+    },
+    lifecycle: {
+      onDispose(fn: () => void) {
+        disposers.push(fn);
+        return () => undefined;
+      },
+    },
+  };
+
+  try {
+    await mod.default.tui(api);
+
+    const commands = layers.flatMap((layer) => layer.commands ?? []);
+    commands.find((command) => command.name === 'goals.create')?.run();
+    expect(promptConfirm).toBeFunction();
+
+    promptConfirm?.('Write tests for goal creation');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(sessionCreates).toHaveLength(1);
+    expect(sessionCreates[0]).toMatchObject({
+      directory: tempDir,
+      title: 'Goal: Write tests for goal creation',
+    });
+    expect(navigations).toEqual([{ name: 'session', params: { sessionID: 'new-session' } }]);
+    expect(getThreadGoal('new-session')?.objective).toBe('Write tests for goal creation');
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toMatchObject({
+      sessionID: 'new-session',
+      directory: tempDir,
+      noReply: false,
+    });
+    expect(prompts[0].parts[0].text).toContain(
+      '<untrusted_objective>\nWrite tests for goal creation\n</untrusted_objective>'
+    );
+    expect(toasts[0]).toMatchObject({
+      variant: 'success',
+      message: 'Goal thread started: Write tests for goal creation',
+    });
   } finally {
     for (const dispose of disposers) dispose();
     closeDb();
