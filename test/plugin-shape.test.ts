@@ -24,6 +24,25 @@ test('tui plugin exports a tui-only OpenCode module', async () => {
   expect('server' in mod.default).toBe(false);
 });
 
+test('tui displayed time advances while the active session is running', async () => {
+  const { displayedTimeUsedSeconds } = await import('../src/tui.tsx');
+  const goal = {
+    threadId: 'thread-1',
+    goalId: 'goal-1',
+    objective: 'live update',
+    status: 'active' as const,
+    tokenBudget: null,
+    tokensUsed: 0,
+    timeUsedSeconds: 5,
+    createdAt: 0,
+    updatedAt: 1_000,
+  };
+
+  expect(displayedTimeUsedSeconds(goal, { type: 'busy' }, 4_500)).toBe(8);
+  expect(displayedTimeUsedSeconds(goal, { type: 'idle' }, 4_500)).toBe(5);
+  expect(displayedTimeUsedSeconds({ ...goal, status: 'paused' }, { type: 'busy' }, 4_500)).toBe(5);
+});
+
 test('tui plugin registers goal commands and host slots', async () => {
   const tempDir = mkdtempSync(join(tmpdir(), 'opencode-goals-tui-test-'));
   setDbPathForTests(join(tempDir, 'goals.db'));

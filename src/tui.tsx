@@ -14,15 +14,22 @@ import type { ThreadGoal } from './types.js';
 
 const id = 'opencode-goals-tui';
 
-type GoalState = Pick<
+export type GoalState = Pick<
   ThreadGoal,
-  'threadId' | 'objective' | 'status' | 'tokenBudget' | 'tokensUsed' | 'timeUsedSeconds'
+  | 'threadId'
+  | 'objective'
+  | 'status'
+  | 'tokenBudget'
+  | 'tokensUsed'
+  | 'timeUsedSeconds'
+  | 'updatedAt'
 >;
 
 const tui: TuiPlugin = async (api) => {
   initializeSchema();
 
   const [goal, setGoal] = createSignal<GoalState | null>(null);
+  const [clock, setClock] = createSignal(Date.now());
   const resumePrompted = new Set<string>();
 
   function setGoalState(next: GoalState | null): void {
@@ -147,6 +154,7 @@ const tui: TuiPlugin = async (api) => {
     order: 100,
     slots: {
       sidebar_content(_ctx, props) {
+        const now = clock();
         const current = goal();
         if (!current || current.threadId !== props.session_id) {
           return (
@@ -164,6 +172,12 @@ const tui: TuiPlugin = async (api) => {
               : current.status === 'paused'
                 ? api.theme.current.warning
                 : api.theme.current.textMuted;
+
+        const timeUsedSeconds = displayedTimeUsedSeconds(
+          current,
+          api.state.session.status(props.session_id),
+          now
+        );
 
         const statusIcon =
           current.status === 'active'
@@ -185,16 +199,23 @@ const tui: TuiPlugin = async (api) => {
               {tokenLine(current)}
             </text>
             <text fg={api.theme.current.textMuted}>
-              {formatTime(current.timeUsedSeconds)}
+              {formatTime(timeUsedSeconds)}
             </text>
           </box>
         );
       },
       session_prompt_right(_ctx, props) {
+        const now = clock();
         const current = goal();
         if (!current || current.threadId !== props.session_id || current.status !== 'active') {
           return null;
         }
+
+        const timeUsedSeconds = displayedTimeUsedSeconds(
+          current,
+          api.state.session.status(props.session_id),
+          now
+        );
 
         return (
           <box flexDirection="row" gap={1}>
@@ -202,7 +223,7 @@ const tui: TuiPlugin = async (api) => {
               ● {truncate(current.objective, 30)}
             </text>
             <text fg={api.theme.current.textMuted}>
-              {compactUsageLine(current)}
+              {compactUsageLine(current, timeUsedSeconds)}
             </text>
           </box>
         );
@@ -212,16 +233,21 @@ const tui: TuiPlugin = async (api) => {
 
   const pollInterval = setInterval(() => {
     void fetchGoal();
-  }, 2000);
+  }, 1000);
+  const clockInterval = setInterval(() => {
+    setClock(Date.now());
+  }, 1000);
 
   void fetchGoal();
   api.event.on('session.created', () => void fetchGoal());
   api.event.on('session.updated', () => void fetchGoal());
+  api.event.on('session.status', () => void fetchGoal());
   api.event.on('session.idle', () => void fetchGoal());
   api.event.on('message.updated', () => void fetchGoal());
 
   api.lifecycle.onDispose(() => {
     clearInterval(pollInterval);
+    clearInterval(clockInterval);
   });
 
   async function createGoal(objective: string): Promise<void> {
@@ -483,9 +509,9 @@ function tokenLine(goal: GoalState): string {
   return `${formatNumber(goal.tokensUsed)} tokens`;
 }
 
-function compactUsageLine(goal: GoalState): string {
+function compactUsageLine(goal: GoalState, timeUsedSeconds = goal.timeUsedSeconds): string {
   if (goal.tokenBudget !== null) return tokenLine(goal);
-  return formatTime(goal.timeUsedSeconds);
+  return formatTime(timeUsedSeconds);
 }
 
 function formatNumber(n: number): string {
@@ -502,6 +528,18 @@ function formatTime(seconds: number): string {
   return `${hours}h ${minutes}m`;
 }
 
+export function displayedTimeUsedSeconds(
+  goal: GoalState,
+  sessionStatus: { type: string } | undefined,
+  nowMs: number
+): number {
+  if (goal.status !== 'active') return goal.timeUsedSeconds;
+  if (!sessionStatus || sessionStatus.type === 'idle') return goal.timeUsedSeconds;
+
+  const liveDelta = Math.max(0, Math.floor((nowMs - goal.updatedAt) / 1000));
+  return goal.timeUsedSeconds + liveDelta;
+}
+
 function sameGoal(left: GoalState | null, right: GoalState | null): boolean {
   if (left === right) return true;
   if (!left || !right) return false;
@@ -511,6 +549,7 @@ function sameGoal(left: GoalState | null, right: GoalState | null): boolean {
     left.status === right.status &&
     left.tokenBudget === right.tokenBudget &&
     left.tokensUsed === right.tokensUsed &&
-    left.timeUsedSeconds === right.timeUsedSeconds
+    left.timeUsedSeconds === right.timeUsedSeconds &&
+    left.updatedAt === right.updatedAt
   );
 }

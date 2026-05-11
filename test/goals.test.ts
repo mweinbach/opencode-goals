@@ -232,3 +232,135 @@ test('model tools enforce create-only and complete-only contracts', async () => 
   expect(completed.completionBudgetReport).toContain('40 of 100');
   expect(getThreadGoal('thread-1')).toBeNull();
 });
+
+test('server accounts message updates from the first observed token usage', async () => {
+  initializeSchema();
+  replaceThreadGoal('message-update-thread', 'track live tokens', 'active', null);
+
+  let latestMessage: any = {
+    info: {
+      id: 'assistant-1',
+      role: 'assistant',
+      tokens: {
+        input: 100,
+        output: 20,
+        reasoning: 0,
+        cache: { read: 40, write: 0 },
+      },
+    },
+    parts: [],
+  };
+
+  const mod = await import('../src/index.js');
+  const hooks = await mod.default.server({
+    client: {
+      app: {
+        log: async () => ({}),
+      },
+      session: {
+        messages: async () => ({ data: [latestMessage] }),
+        prompt: async () => ({}),
+      },
+    },
+  } as any);
+
+  await hooks.event?.({
+    event: {
+      type: 'message.updated',
+      properties: {
+        sessionID: 'message-update-thread',
+        info: latestMessage.info,
+      },
+    } as any,
+  });
+
+  expect(getThreadGoal('message-update-thread')?.tokensUsed).toBe(80);
+
+  latestMessage = {
+    ...latestMessage,
+    info: {
+      ...latestMessage.info,
+      tokens: {
+        input: 100,
+        output: 30,
+        reasoning: 0,
+        cache: { read: 40, write: 0 },
+      },
+    },
+  };
+
+  await hooks.event?.({
+    event: {
+      type: 'message.updated',
+      properties: {
+        sessionID: 'message-update-thread',
+        info: latestMessage.info,
+      },
+    } as any,
+  });
+
+  expect(getThreadGoal('message-update-thread')?.tokensUsed).toBe(90);
+});
+
+test('server sums step-finish token usage for live multi-step accounting', async () => {
+  initializeSchema();
+  replaceThreadGoal('step-finish-thread', 'track step usage', 'active', null);
+
+  const latestMessage = {
+    info: {
+      id: 'assistant-steps',
+      role: 'assistant',
+      tokens: {
+        input: 50,
+        output: 10,
+        reasoning: 0,
+        cache: { read: 0, write: 0 },
+      },
+    },
+    parts: [
+      {
+        type: 'step-finish',
+        tokens: {
+          input: 100,
+          output: 20,
+          reasoning: 0,
+          cache: { read: 20, write: 0 },
+        },
+      },
+      {
+        type: 'step-finish',
+        tokens: {
+          input: 50,
+          output: 10,
+          reasoning: 0,
+          cache: { read: 0, write: 0 },
+        },
+      },
+    ],
+  };
+
+  const mod = await import('../src/index.js');
+  const hooks = await mod.default.server({
+    client: {
+      app: {
+        log: async () => ({}),
+      },
+      session: {
+        messages: async () => ({ data: [latestMessage] }),
+        prompt: async () => ({}),
+      },
+    },
+  } as any);
+
+  await hooks.event?.({
+    event: {
+      type: 'message.updated',
+      properties: {
+        sessionID: 'step-finish-thread',
+        info: latestMessage.info,
+      },
+    } as any,
+  });
+
+  expect(getThreadGoal('step-finish-thread')?.tokensUsed).toBe(160);
+});

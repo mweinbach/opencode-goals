@@ -25,6 +25,12 @@ import { validateThreadGoalObjective } from './types.js';
 
 const pluginId = 'opencode-goals';
 const runtimeStates = new Map<string, GoalRuntimeState>();
+const zeroTokenUsage: TokenUsage = {
+  input: 0,
+  output: 0,
+  reasoning: 0,
+  cache: { read: 0, write: 0 },
+};
 
 function getOrCreateState(sessionId: string): GoalRuntimeState {
   let state = runtimeStates.get(sessionId);
@@ -83,21 +89,19 @@ export const OpenCodeGoalsPlugin: Plugin = async ({ client }) => {
 
       if (!goal || (goal.status !== 'active' && goal.status !== 'budget_limited')) return;
 
-      recordToolExecution(state);
-
       const currentUsage = await readLatestTokenUsage(client, sessionId);
-      if (!currentUsage) return;
-
-      if (!state.accounting.turn || state.accounting.turn.turnId !== currentUsage.turnId) {
-        await handleTurnStarted(state, sessionId, currentUsage.turnId, currentUsage.tokens);
+      if (!currentUsage) {
+        recordToolExecution(state);
+        return;
       }
 
-      const shouldSteer = await accountGoalProgress(
+      const shouldSteer = await accountObservedGoalUsage(
         state,
         sessionId,
-        currentUsage.tokens,
+        currentUsage,
         input.tool === 'update_goal' ? 'suppressed' : 'allowed'
       );
+      recordToolExecution(state);
 
       if (shouldSteer) {
         await handleBudgetLimitSteering(state, client, sessionId);
@@ -148,31 +152,25 @@ async function readLatestTokenUsage(
   let latest: any;
   const list = messages.data ?? [];
   for (let index = list.length - 1; index >= 0; index -= 1) {
-    if ((list[index] as any).info?.tokens) {
+    if (readTokenUsageFromMessage(list[index] as any)) {
       latest = list[index];
       break;
     }
   }
-  const info: any = latest?.info;
-  const tokens: any = info?.tokens;
+  if (!latest) return null;
+
+  const info: any = latest.info;
+  const tokens = readTokenUsageFromMessage(latest);
   if (!tokens) return null;
 
   return {
     turnId: info.id ?? crypto.randomUUID(),
-    tokens: {
-      input: tokens.input ?? 0,
-      output: tokens.output ?? 0,
-      reasoning: tokens.reasoning ?? 0,
-      cache: {
-        read: tokens.cache?.read ?? 0,
-        write: tokens.cache?.write ?? 0,
-      },
-    },
+    tokens,
   };
 }
 
 async function handleEvent(event: Event, client: Parameters<Plugin>[0]['client']): Promise<void> {
-  const eventType = event.type;
+  const eventType = (event as any).type as string;
   const properties = (event as any).properties ?? {};
   const sessionId =
     properties.sessionID ??
@@ -190,6 +188,8 @@ async function handleEvent(event: Event, client: Parameters<Plugin>[0]['client']
     const state = getOrCreateState(sessionId);
     const goal = getThreadGoal(sessionId);
     if (!goal || goal.status !== 'active') return;
+
+    await accountLatestGoalUsage(state, client, sessionId, 'suppressed');
 
     if (state.isContinuationTurn && state.toolsExecutedThisTurn === 0) {
       state.continuationSuppressed = true;
@@ -223,13 +223,97 @@ async function handleEvent(event: Event, client: Parameters<Plugin>[0]['client']
     return;
   }
 
-  if (eventType === 'message.updated' || eventType === 'message.part.updated') {
+  if (eventType === 'message.updated') {
     if (!sessionId) return;
     const role = properties.role ?? properties.message?.role ?? properties.info?.role;
     if (role === 'user') {
       resetContinuationSuppression(getOrCreateState(sessionId));
+      return;
+    }
+
+    const state = getOrCreateState(sessionId);
+    const shouldSteer = await accountLatestGoalUsage(state, client, sessionId, 'allowed');
+    if (shouldSteer) {
+      await handleBudgetLimitSteering(state, client, sessionId);
+      const updated = getThreadGoal(sessionId);
+      if (updated?.status === 'budget_limited') {
+        await logGoalMetric(client, 'goal.budget_limited', updated);
+      }
+    }
+    return;
+  }
+
+  if (eventType === 'message.part.updated') {
+    if (!sessionId) return;
+    const state = getOrCreateState(sessionId);
+    const shouldSteer = await accountLatestGoalUsage(state, client, sessionId, 'allowed');
+    if (shouldSteer) {
+      await handleBudgetLimitSteering(state, client, sessionId);
     }
   }
+}
+
+async function accountLatestGoalUsage(
+  state: GoalRuntimeState,
+  client: Parameters<Plugin>[0]['client'],
+  sessionId: string,
+  budgetLimitSteering: 'allowed' | 'suppressed'
+): Promise<boolean> {
+  const currentUsage = await readLatestTokenUsage(client, sessionId);
+  if (!currentUsage) return false;
+  return accountObservedGoalUsage(state, sessionId, currentUsage, budgetLimitSteering);
+}
+
+async function accountObservedGoalUsage(
+  state: GoalRuntimeState,
+  sessionId: string,
+  currentUsage: { turnId: string; tokens: TokenUsage },
+  budgetLimitSteering: 'allowed' | 'suppressed'
+): Promise<boolean> {
+  if (!state.accounting.turn || state.accounting.turn.turnId !== currentUsage.turnId) {
+    await handleTurnStarted(state, sessionId, currentUsage.turnId, zeroTokenUsage);
+  }
+
+  return accountGoalProgress(state, sessionId, currentUsage.tokens, budgetLimitSteering);
+}
+
+function readTokenUsageFromMessage(message: any): TokenUsage | null {
+  const stepTokens =
+    message?.parts
+      ?.filter((part: any) => part?.type === 'step-finish' && part.tokens)
+      ?.map((part: any) => normalizeTokenUsage(part.tokens)) ?? [];
+
+  if (stepTokens.length > 0) return sumTokenUsage(stepTokens);
+
+  const infoTokens = message?.info?.tokens;
+  return infoTokens ? normalizeTokenUsage(infoTokens) : null;
+}
+
+function normalizeTokenUsage(tokens: any): TokenUsage {
+  return {
+    input: tokens?.input ?? 0,
+    output: tokens?.output ?? 0,
+    reasoning: tokens?.reasoning ?? 0,
+    cache: {
+      read: tokens?.cache?.read ?? 0,
+      write: tokens?.cache?.write ?? 0,
+    },
+  };
+}
+
+function sumTokenUsage(usages: TokenUsage[]): TokenUsage {
+  return usages.reduce<TokenUsage>(
+    (total, usage) => ({
+      input: total.input + usage.input,
+      output: total.output + usage.output,
+      reasoning: total.reasoning + usage.reasoning,
+      cache: {
+        read: total.cache.read + usage.cache.read,
+        write: total.cache.write + usage.cache.write,
+      },
+    }),
+    { ...zeroTokenUsage, cache: { ...zeroTokenUsage.cache } }
+  );
 }
 
 async function handleGoalSlashCommand(
