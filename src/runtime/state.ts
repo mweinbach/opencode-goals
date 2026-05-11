@@ -26,6 +26,8 @@ export interface GoalRuntimeState {
   budgetLimitReportedGoalId: string | null;
   continuationTurnId: string | null;
   continuationSuppressed: boolean;
+  compactionInProgress: boolean;
+  compactionStartedAt: number | null;
   // Track tool calls in current turn for suppression logic
   toolsExecutedThisTurn: number;
   isContinuationTurn: boolean;
@@ -37,6 +39,8 @@ export function createGoalRuntimeState(): GoalRuntimeState {
     budgetLimitReportedGoalId: null,
     continuationTurnId: null,
     continuationSuppressed: false,
+    compactionInProgress: false,
+    compactionStartedAt: null,
     toolsExecutedThisTurn: 0,
     isContinuationTurn: false,
   };
@@ -247,6 +251,7 @@ export async function maybeContinueGoal(
   sessionId: string
 ): Promise<boolean> {
   if (state.continuationSuppressed) return false;
+  if (isCompactionBlockingContinuation(state)) return false;
 
   const candidate = await getContinuationCandidate(state, sessionId);
   if (!candidate) return false;
@@ -296,6 +301,8 @@ export function resetRuntimeState(state: GoalRuntimeState): void {
   state.budgetLimitReportedGoalId = null;
   state.continuationTurnId = null;
   state.continuationSuppressed = false;
+  state.compactionInProgress = false;
+  state.compactionStartedAt = null;
   state.toolsExecutedThisTurn = 0;
   state.isContinuationTurn = false;
 }
@@ -306,4 +313,25 @@ export function suppressContinuation(state: GoalRuntimeState): void {
 
 export function resetContinuationSuppression(state: GoalRuntimeState): void {
   state.continuationSuppressed = false;
+}
+
+export function markCompactionStarted(state: GoalRuntimeState): void {
+  state.compactionInProgress = true;
+  state.compactionStartedAt = Date.now();
+}
+
+export function markCompactionFinished(state: GoalRuntimeState): void {
+  state.compactionInProgress = false;
+  state.compactionStartedAt = null;
+}
+
+export function isCompactionBlockingContinuation(state: GoalRuntimeState): boolean {
+  if (!state.compactionInProgress) return false;
+
+  if (state.compactionStartedAt && Date.now() - state.compactionStartedAt > 5 * 60 * 1000) {
+    markCompactionFinished(state);
+    return false;
+  }
+
+  return true;
 }

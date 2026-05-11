@@ -10,6 +10,8 @@ Persistent, session-scoped goal tracking with auto-continuation, token budgeting
 - **Token Budgeting**: Optional hard cap with automatic `budget_limited` status
 - **Auto-Continuation**: When a turn finishes and the goal is still active, the runtime automatically queues a continuation turn
 - **Wall-Clock & Token Accounting**: Tracks elapsed time and token consumption via SDK messages API
+- **Lifecycle-Aware Controls**: Manual stop/interruption pauses goals, pause suppresses continuation, and resume can restart work when idle
+- **Compaction Context**: Active, paused, and budget-limited goals are preserved in OpenCode compaction summaries
 - **Completion Audit Prompts**: Model is steered to perform rigorous completion verification before marking done
 - **TUI Controls**: Create, replace, pause, resume, clear, and inspect goals from OpenCode's TUI
 
@@ -131,7 +133,7 @@ Or via file path:
 Press `Ctrl+P` or type `/` to access:
 - `Goals: Create Goal` — Opens dialogs to set an objective and optional token budget. Blank budget means no budget.
 - `Goals: Summary` or `/goal` — Opens the current goal summary/actions dialog
-- `Goals: Pause/Resume Goal` — Toggle goal state
+- `Goals: Pause/Resume Goal` — Toggle goal state. Pause stops auto-continuation; resume restarts the goal turn when the session is idle.
 - `Goals: Clear Goal` — Remove the active goal
 
 ### Toast Notifications
@@ -195,6 +197,8 @@ User creates goal (/goal, TUI, or create_goal)
     ↓
 Status: active → Auto-continuation on idle
     ↓
+Manual stop/interruption? → Status: paused, no continuation injection
+    ↓
 Token accounting after each tool execution
     ↓
 Budget exceeded? → Status: budget_limited + steering prompt
@@ -229,9 +233,11 @@ This plugin operates within OpenCode's plugin API boundaries. These Codex featur
 | Codex Feature | Plugin Approximation |
 |---------------|----------------------|
 | Turn start/finish hooks | `tool.execute.after` + `session.idle` |
-| Interrupt → pause | Not detectable; use `/goal pause` or the TUI pause action |
+| Interrupt → pause | Detected from aborted message/part events when OpenCode emits them; `/goal pause` and TUI pause remain explicit fallbacks |
 | Native continuation turns | Simulated via `session.prompt()` |
 | Invisible developer-role prompt injection | Simulated with plugin-safe session prompts |
+
+During OpenCode compaction, the plugin injects escaped goal context and suppresses its own idle continuation while compaction is in progress. OpenCode's built-in post-compaction continuation remains responsible for finishing the compacted turn.
 
 ## Development
 

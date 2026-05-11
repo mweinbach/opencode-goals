@@ -496,3 +496,126 @@ test('interrupted part update pauses active goal before idle', async () => {
 
   expect(getThreadGoal('interrupted-part-thread')?.status).toBe('paused');
 });
+
+test('slash pause accounts usage and slash resume queues continuation', async () => {
+  initializeSchema();
+  replaceThreadGoal('slash-thread', 'pause and resume from slash', 'active', null);
+
+  const latestMessage = {
+    info: {
+      id: 'assistant-slash',
+      role: 'assistant',
+      tokens: {
+        input: 20,
+        output: 5,
+        reasoning: 0,
+        cache: { read: 4, write: 0 },
+      },
+    },
+    parts: [],
+  };
+  const prompts: unknown[] = [];
+
+  const mod = await import('../src/index.js');
+  const hooks = await mod.default.server({
+    client: {
+      app: {
+        log: async () => ({}),
+      },
+      session: {
+        messages: async () => ({ data: [latestMessage] }),
+        prompt: async (input: unknown) => {
+          prompts.push(input);
+          return {};
+        },
+      },
+    },
+  } as any);
+
+  const pauseOutput = { parts: [] as any[] };
+  await hooks['command.execute.before']?.(
+    { command: 'goal', sessionID: 'slash-thread', arguments: 'pause' } as any,
+    pauseOutput as any
+  );
+
+  const paused = getThreadGoal('slash-thread');
+  expect(paused?.status).toBe('paused');
+  expect(paused?.tokensUsed).toBe(21);
+  expect(prompts).toHaveLength(0);
+  expect(pauseOutput.parts[0].text).toContain('Goal paused');
+
+  const resumeOutput = { parts: [] as any[] };
+  await hooks['command.execute.before']?.(
+    { command: 'goal', sessionID: 'slash-thread', arguments: 'resume' } as any,
+    resumeOutput as any
+  );
+
+  expect(getThreadGoal('slash-thread')?.status).toBe('active');
+  expect(prompts).toHaveLength(1);
+  expect(resumeOutput.parts[0].text).toContain('Goal resumed and continuation queued');
+});
+
+test('compaction context preserves goal state and blocks continuation while compacting', async () => {
+  initializeSchema();
+  replaceThreadGoal('compact-thread', 'compact <goal> & preserve', 'active', null);
+
+  const prompts: unknown[] = [];
+
+  const mod = await import('../src/index.js');
+  const hooks = await mod.default.server({
+    client: {
+      app: {
+        log: async () => ({}),
+      },
+      session: {
+        messages: async () => ({ data: [] }),
+        prompt: async (input: unknown) => {
+          prompts.push(input);
+          return {};
+        },
+      },
+    },
+  } as any);
+
+  const output = { context: [] as string[], prompt: undefined as string | undefined };
+  await hooks['experimental.session.compacting']?.(
+    { sessionID: 'compact-thread' } as any,
+    output
+  );
+
+  expect(output.context).toHaveLength(1);
+  expect(output.context[0]).toContain('compact &lt;goal&gt; &amp; preserve');
+  expect(output.context[0]).toContain('- Status: active');
+  expect(output.context[0]).not.toContain('Token budget');
+
+  await hooks.event?.({
+    event: {
+      type: 'session.idle',
+      properties: {
+        sessionID: 'compact-thread',
+      },
+    } as any,
+  });
+
+  expect(prompts).toHaveLength(0);
+
+  await hooks.event?.({
+    event: {
+      type: 'session.compacted',
+      properties: {
+        sessionID: 'compact-thread',
+      },
+    } as any,
+  });
+
+  await hooks.event?.({
+    event: {
+      type: 'session.idle',
+      properties: {
+        sessionID: 'compact-thread',
+      },
+    } as any,
+  });
+
+  expect(prompts).toHaveLength(1);
+});

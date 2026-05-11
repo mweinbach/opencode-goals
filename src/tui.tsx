@@ -324,18 +324,51 @@ const tui: TuiPlugin = async (api) => {
     if (!current) return;
 
     try {
-      updateThreadGoal(current.threadId, {
-        status: current.status === 'active' ? 'paused' : 'active',
-      });
-      await fetchGoal(current.threadId);
-      api.ui.toast({
-        variant: current.status === 'active' ? 'info' : 'success',
-        message: current.status === 'active' ? 'Goal paused' : 'Goal resumed',
-        duration: 2000,
-      });
+      if (current.status === 'active') {
+        const paused = pauseActiveThreadGoal(current.threadId);
+        if (!paused) {
+          api.ui.toast({ variant: 'error', message: 'Goal could not be paused', duration: 2000 });
+          return;
+        }
+        resumePrompted.add(current.threadId);
+        await fetchGoal(current.threadId);
+        api.ui.toast({
+          variant: 'info',
+          message: 'Goal paused. Auto-continuation stopped.',
+          duration: 2500,
+        });
+        return;
+      }
+
+      await resumeGoal(current);
     } catch {
       api.ui.toast({ variant: 'error', message: 'Failed to update goal', duration: 2000 });
     }
+  }
+
+  async function resumeGoal(current: GoalState): Promise<void> {
+    const updated = updateThreadGoal(current.threadId, {
+      status: 'active',
+    });
+
+    if (!updated || updated.status !== 'active') {
+      api.ui.toast({
+        variant: 'error',
+        message: `Goal could not be resumed because it is ${updated?.status ?? current.status}`,
+        duration: 3000,
+      });
+      await fetchGoal(current.threadId);
+      return;
+    }
+
+    resumePrompted.delete(current.threadId);
+    const started = await startGoalTurnIfIdle(updated).catch(() => false);
+    await fetchGoal(current.threadId);
+    api.ui.toast({
+      variant: 'success',
+      message: started ? 'Goal resumed and started' : 'Goal resumed',
+      duration: 2500,
+    });
   }
 
   async function clearGoal(): Promise<void> {
@@ -344,6 +377,7 @@ const tui: TuiPlugin = async (api) => {
 
     try {
       deleteThreadGoal(current.threadId);
+      resumePrompted.delete(current.threadId);
       await fetchGoal(current.threadId);
       api.ui.toast({ variant: 'info', message: 'Goal cleared', duration: 2000 });
     } catch {
@@ -431,11 +465,8 @@ const tui: TuiPlugin = async (api) => {
         title="Resume paused goal?"
         message={truncate(current.objective, 120)}
         onConfirm={() => {
-          updateThreadGoal(current.threadId, {
-            status: 'active',
-          });
-          void fetchGoal(current.threadId);
           api.ui.dialog.clear();
+          void resumeGoal(current);
         }}
         onCancel={() => {
           api.ui.dialog.clear();
@@ -546,7 +577,16 @@ const tui: TuiPlugin = async (api) => {
     if (typeof sessionId !== 'string') return;
     if (!isInterruptedEvent(event)) return;
 
-    pauseActiveThreadGoal(sessionId);
+    const paused = pauseActiveThreadGoal(sessionId);
+    if (!paused) return;
+
+    resumePrompted.add(sessionId);
+    setGoalState(paused);
+    api.ui.toast({
+      variant: 'info',
+      message: 'Goal paused after stop. Resume from /goal when ready.',
+      duration: 3500,
+    });
   }
 };
 
