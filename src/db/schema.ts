@@ -3,11 +3,9 @@ import { getDb } from './connection.js';
 export function initializeSchema(): void {
   const db = getDb();
 
-  // Main goals table - one active goal per session (Codex exact)
   db.run(`
-    CREATE TABLE IF NOT EXISTS session_goals (
-      session_id TEXT PRIMARY KEY NOT NULL,
-      directory TEXT NOT NULL,
+    CREATE TABLE IF NOT EXISTS thread_goals (
+      thread_id TEXT PRIMARY KEY NOT NULL,
       goal_id TEXT NOT NULL,
       objective TEXT NOT NULL,
       status TEXT NOT NULL CHECK(status IN ('active', 'paused', 'budget_limited', 'complete')),
@@ -19,28 +17,27 @@ export function initializeSchema(): void {
     )
   `);
 
-  // Archive for historical goals (Option B)
-  db.run(`
-    CREATE TABLE IF NOT EXISTS goal_archive (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      session_id TEXT NOT NULL,
-      directory TEXT NOT NULL,
-      goal_id TEXT NOT NULL,
-      objective TEXT NOT NULL,
-      status TEXT NOT NULL,
-      token_budget INTEGER,
-      tokens_used INTEGER NOT NULL DEFAULT 0,
-      time_used_seconds INTEGER NOT NULL DEFAULT 0,
-      created_at_ms INTEGER NOT NULL,
-      completed_at_ms INTEGER,
-      archived_at_ms INTEGER NOT NULL
-    )
-  `);
+  migrateLegacySessionGoals();
 
-  // Indexes
-  db.run(`CREATE INDEX IF NOT EXISTS idx_goals_directory ON session_goals(directory)`);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_goals_status ON session_goals(status)`);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_archive_session ON goal_archive(session_id)`);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_archive_directory ON goal_archive(directory)`);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_archive_goal_id ON goal_archive(goal_id)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_thread_goals_status ON thread_goals(status)`);
+}
+
+function migrateLegacySessionGoals(): void {
+  const db = getDb();
+  const legacy = db
+    .query(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'session_goals'`)
+    .get();
+
+  if (!legacy) return;
+
+  db.run(`
+    INSERT OR IGNORE INTO thread_goals (
+      thread_id, goal_id, objective, status, token_budget,
+      tokens_used, time_used_seconds, created_at_ms, updated_at_ms
+    )
+    SELECT
+      session_id, goal_id, objective, status, token_budget,
+      tokens_used, time_used_seconds, created_at_ms, updated_at_ms
+    FROM session_goals
+  `);
 }

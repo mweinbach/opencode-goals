@@ -37,12 +37,12 @@ export const updateGoalTool = tool({
 
       const completionBudgetReport =
         updated.tokenBudget !== null
-          ? `Goal complete. Tokens used: ${updated.tokensUsed} / ${updated.tokenBudget}. Time: ${updated.timeUsedSeconds}s.`
-          : `Goal complete. Time: ${updated.timeUsedSeconds}s.`;
+          ? `Goal achieved. Report final token usage to the user: tokens used: ${updated.tokensUsed} of ${updated.tokenBudget}; time used: ${updated.timeUsedSeconds} seconds.`
+          : null;
 
       return JSON.stringify({
         goal: {
-          sessionId: updated.sessionId,
+          threadId: updated.threadId,
           objective: updated.objective,
           status: updated.status,
           tokenBudget: updated.tokenBudget,
@@ -51,7 +51,8 @@ export const updateGoalTool = tool({
           createdAt: updated.createdAt,
           updatedAt: updated.updatedAt,
         },
-        remainingTokens: 0,
+        remainingTokens:
+          updated.tokenBudget !== null ? Math.max(0, updated.tokenBudget - updated.tokensUsed) : null,
         completionBudgetReport,
       });
     } catch (error) {

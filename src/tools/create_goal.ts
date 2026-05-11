@@ -1,5 +1,5 @@
 import { tool } from '@opencode-ai/plugin';
-import { replaceThreadGoal, getThreadGoal } from '../db/goals.js';
+import { getThreadGoal, insertThreadGoal } from '../db/goals.js';
 import { validateThreadGoalObjective } from '../types.js';
 
 export const createGoalTool = tool({
@@ -30,26 +30,34 @@ export const createGoalTool = tool({
       validateThreadGoalObjective(args.objective);
 
       // Validate budget
-      if (args.token_budget !== undefined && args.token_budget <= 0) {
+      if (
+        args.token_budget !== undefined &&
+        (!Number.isInteger(args.token_budget) || args.token_budget <= 0)
+      ) {
         return JSON.stringify({
           error: 'token_budget must be a positive integer',
         });
       }
 
-      const goal = replaceThreadGoal(
+      const goal = insertThreadGoal(
         context.sessionID,
-        context.directory,
         args.objective.trim(),
         'active',
         args.token_budget ?? null
       );
+
+      if (!goal) {
+        return JSON.stringify({
+          error: 'Cannot create a new goal because this session already has a goal.',
+        });
+      }
 
       const remainingTokens =
         goal.tokenBudget !== null ? Math.max(0, goal.tokenBudget - goal.tokensUsed) : null;
 
       return JSON.stringify({
         goal: {
-          sessionId: goal.sessionId,
+          threadId: goal.threadId,
           objective: goal.objective,
           status: goal.status,
           tokenBudget: goal.tokenBudget,

@@ -17,7 +17,7 @@ export const getGoalTool = tool({
 
     return JSON.stringify({
       goal: {
-        sessionId: goal.sessionId,
+        threadId: goal.threadId,
         objective: goal.objective,
         status: goal.status,
         tokenBudget: goal.tokenBudget,

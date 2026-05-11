@@ -3,22 +3,22 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { homedir } from 'node:os';
 
-const DB_PATH = `${homedir()}/.config/opencode/goals.db`;
+const DEFAULT_DB_PATH = `${homedir()}/.config/opencode/goals.db`;
 
 let dbInstance: Database | null = null;
+let dbPath = DEFAULT_DB_PATH;
 
 export function getDb(): Database {
   if (dbInstance) return dbInstance;
 
-  // Ensure directory exists
-  const dir = dirname(DB_PATH);
+  const dir = dirname(dbPath);
   try {
     mkdirSync(dir, { recursive: true });
   } catch {
     // Directory may already exist
   }
 
-  dbInstance = new Database(DB_PATH);
+  dbInstance = new Database(dbPath);
   dbInstance.run('PRAGMA journal_mode = WAL;');
   dbInstance.run('PRAGMA foreign_keys = ON;');
 
@@ -30,4 +30,9 @@ export function closeDb(): void {
     dbInstance.close();
     dbInstance = null;
   }
+}
+
+export function setDbPathForTests(path: string | null): void {
+  closeDb();
+  dbPath = path ?? DEFAULT_DB_PATH;
 }

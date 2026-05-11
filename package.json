@@ -5,9 +5,6 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "bin": {
-    "goal": "dist/cli.js"
-  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -30,9 +27,8 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc && cp src/tui.tsx dist/tui.tsx",
+    "build": "rm -rf dist && tsc && cp src/tui.tsx dist/tui.tsx",
     "dev": "tsc --watch",
-    "cli": "bun src/cli.ts",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.tui.json",
     "test": "npm run typecheck && npm run build && bun test",
     "prepublishOnly": "npm run build"

@@ -5,23 +5,24 @@ import { initializeSchema } from './db/schema.js';
 import {
   deleteThreadGoal,
   getThreadGoal,
-  listArchivedGoalsForSession,
   replaceThreadGoal,
   updateThreadGoal,
 } from './db/goals.js';
+import { validateThreadGoalObjective } from './types.js';
 import type { ThreadGoal } from './types.js';
 
 const id = 'opencode-goals-tui';
 
 type GoalState = Pick<
   ThreadGoal,
-  'sessionId' | 'objective' | 'status' | 'tokenBudget' | 'tokensUsed' | 'timeUsedSeconds'
+  'threadId' | 'objective' | 'status' | 'tokenBudget' | 'tokensUsed' | 'timeUsedSeconds'
 >;
 
 const tui: TuiPlugin = async (api) => {
   initializeSchema();
 
   const [goal, setGoal] = createSignal<GoalState | null>(null);
+  const resumePrompted = new Set<string>();
 
   async function currentSessionId(): Promise<string | null> {
     const route = api.route.current;
@@ -43,6 +44,7 @@ const tui: TuiPlugin = async (api) => {
 
     const next = getThreadGoal(id);
     setGoal(next);
+    maybePromptResume(next);
   }
 
   function openCreateDialog(): void {
@@ -53,8 +55,8 @@ const tui: TuiPlugin = async (api) => {
         onConfirm={(value: string) => {
           const objective = value.trim();
           if (!objective) return;
-          void createGoal(objective);
           api.ui.dialog.clear();
+          void createGoal(objective);
         }}
         onCancel={() => {
           api.ui.dialog.clear();
@@ -70,19 +72,20 @@ const tui: TuiPlugin = async (api) => {
         title: 'Goals: Create Goal',
         category: 'Goals',
         namespace: 'palette',
+        slashName: 'goal-create',
         run() {
           openCreateDialog();
         },
       },
       {
-        name: 'goals.status',
-        title: 'Goals: Show Status',
+        name: 'goals.summary',
+        title: 'Goals: Summary',
         category: 'Goals',
         namespace: 'palette',
-        enabled: () => goal() !== null,
+        slashName: 'goal',
+        slashAliases: ['goals'],
         run() {
-          const current = goal();
-          if (current) showGoalStatus(current);
+          showGoalSummary();
         },
       },
       {
@@ -90,6 +93,7 @@ const tui: TuiPlugin = async (api) => {
         title: 'Goals: Pause/Resume Goal',
         category: 'Goals',
         namespace: 'palette',
+        slashName: 'goal-toggle',
         enabled: () => goal() !== null,
         run() {
           void togglePause();
@@ -100,27 +104,18 @@ const tui: TuiPlugin = async (api) => {
         title: 'Goals: Clear Goal',
         category: 'Goals',
         namespace: 'palette',
+        slashName: 'goal-clear',
         enabled: () => goal() !== null,
         run() {
           void clearGoal();
         },
       },
-      {
-        name: 'goals.archived',
-        title: 'Goals: List Archived',
-        category: 'Goals',
-        namespace: 'palette',
-        run() {
-          void showArchivedGoals();
-        },
-      },
     ],
     bindings: api.tuiConfig.keybinds.gather('goals.palette', [
       'goals.create',
-      'goals.status',
+      'goals.summary',
       'goals.pause_resume',
       'goals.clear',
-      'goals.archived',
     ]),
   });
 
@@ -130,7 +125,7 @@ const tui: TuiPlugin = async (api) => {
       sidebar_content(_ctx, props) {
         void fetchGoal(props.session_id);
         const current = goal();
-        if (!current || current.sessionId !== props.session_id) {
+        if (!current || current.threadId !== props.session_id) {
           return (
             <box padding={1}>
               <text fg={api.theme.current.textMuted}>No active goal</text>
@@ -175,7 +170,7 @@ const tui: TuiPlugin = async (api) => {
       session_prompt_right(_ctx, props) {
         void fetchGoal(props.session_id);
         const current = goal();
-        if (!current || current.sessionId !== props.session_id || current.status !== 'active') {
+        if (!current || current.threadId !== props.session_id || current.status !== 'active') {
           return null;
         }
 
@@ -185,7 +180,7 @@ const tui: TuiPlugin = async (api) => {
               ● {truncate(current.objective, 30)}
             </text>
             <text fg={api.theme.current.textMuted}>
-              {tokenLine(current)} · {formatTime(current.timeUsedSeconds)}
+              {compactUsageLine(current)}
             </text>
           </box>
         );
@@ -214,15 +209,11 @@ const tui: TuiPlugin = async (api) => {
 
       const existing = getThreadGoal(sessionId);
       if (existing) {
-        api.ui.toast({
-          variant: 'warning',
-          message: 'This session already has a goal.',
-          duration: 3000,
-        });
+        confirmReplaceGoal(sessionId, objective);
         return;
       }
 
-      replaceThreadGoal(sessionId, api.state.path.directory, objective, 'active', null);
+      createOrReplaceGoal(sessionId, objective);
       await fetchGoal(sessionId);
       api.ui.toast({
         variant: 'success',
@@ -239,10 +230,10 @@ const tui: TuiPlugin = async (api) => {
     if (!current) return;
 
     try {
-      updateThreadGoal(current.sessionId, {
+      updateThreadGoal(current.threadId, {
         status: current.status === 'active' ? 'paused' : 'active',
       });
-      await fetchGoal(current.sessionId);
+      await fetchGoal(current.threadId);
       api.ui.toast({
         variant: current.status === 'active' ? 'info' : 'success',
         message: current.status === 'active' ? 'Goal paused' : 'Goal resumed',
@@ -258,12 +249,133 @@ const tui: TuiPlugin = async (api) => {
     if (!current) return;
 
     try {
-      deleteThreadGoal(current.sessionId);
-      await fetchGoal(current.sessionId);
+      deleteThreadGoal(current.threadId);
+      await fetchGoal(current.threadId);
       api.ui.toast({ variant: 'info', message: 'Goal cleared', duration: 2000 });
     } catch {
       api.ui.toast({ variant: 'error', message: 'Failed to clear goal', duration: 2000 });
     }
+  }
+
+  function createOrReplaceGoal(sessionId: string, objective: string): void {
+    validateThreadGoalObjective(objective);
+    replaceThreadGoal(sessionId, objective, 'active', null);
+    resumePrompted.delete(sessionId);
+  }
+
+  function confirmReplaceGoal(sessionId: string, objective: string): void {
+    api.ui.dialog.replace(() => (
+      <api.ui.DialogConfirm
+        title="Replace current goal?"
+        message="This session already has a goal. Replacing it resets token and time accounting."
+        onConfirm={() => {
+          try {
+            createOrReplaceGoal(sessionId, objective);
+            void fetchGoal(sessionId);
+            api.ui.toast({
+              variant: 'success',
+              message: `Goal replaced: ${truncate(objective, 40)}`,
+              duration: 3000,
+            });
+          } catch {
+            api.ui.toast({ variant: 'error', message: 'Failed to replace goal', duration: 3000 });
+          } finally {
+            api.ui.dialog.clear();
+          }
+        }}
+        onCancel={() => {
+          api.ui.dialog.clear();
+        }}
+      />
+    ));
+  }
+
+  function maybePromptResume(current: GoalState | null): void {
+    if (!current || current.status !== 'paused' || resumePrompted.has(current.threadId)) return;
+    if (api.ui.dialog.open) return;
+
+    resumePrompted.add(current.threadId);
+    api.ui.dialog.replace(() => (
+      <api.ui.DialogConfirm
+        title="Resume paused goal?"
+        message={truncate(current.objective, 120)}
+        onConfirm={() => {
+          updateThreadGoal(current.threadId, {
+            status: 'active',
+          });
+          void fetchGoal(current.threadId);
+          api.ui.dialog.clear();
+        }}
+        onCancel={() => {
+          api.ui.dialog.clear();
+        }}
+      />
+    ));
+  }
+
+  function showGoalSummary(): void {
+    const current = goal();
+    if (!current) {
+      api.ui.dialog.replace(() => (
+        <api.ui.DialogSelect
+          title="Goal"
+          options={[
+            {
+              title: 'Create Goal',
+              value: 'create',
+              onSelect: () => {
+                api.ui.dialog.clear();
+                openCreateDialog();
+              },
+            },
+          ]}
+          onSelect={(option) => option.onSelect?.()}
+        />
+      ));
+      return;
+    }
+
+    api.ui.dialog.replace(() => (
+      <api.ui.DialogSelect
+        title="Goal"
+        options={[
+          {
+            title: truncate(current.objective, 70),
+            value: 'status',
+            description: `${current.status} | ${tokenLine(current)} | ${formatTime(
+              current.timeUsedSeconds
+            )}`,
+            disabled: true,
+          },
+          {
+            title: current.status === 'active' ? 'Pause Goal' : 'Resume Goal',
+            value: 'toggle',
+            disabled: current.status === 'budget_limited',
+            onSelect: () => {
+              api.ui.dialog.clear();
+              void togglePause();
+            },
+          },
+          {
+            title: 'Replace Goal',
+            value: 'replace',
+            onSelect: () => {
+              api.ui.dialog.clear();
+              openCreateDialog();
+            },
+          },
+          {
+            title: 'Clear Goal',
+            value: 'clear',
+            onSelect: () => {
+              api.ui.dialog.clear();
+              void clearGoal();
+            },
+          },
+        ]}
+        onSelect={(option) => option.onSelect?.()}
+      />
+    ));
   }
 
   function showGoalStatus(current: GoalState): void {
@@ -279,32 +391,6 @@ const tui: TuiPlugin = async (api) => {
       }`,
       duration: 5000,
     });
-  }
-
-  async function showArchivedGoals(): Promise<void> {
-    try {
-      const sessionId = await currentSessionId();
-      if (!sessionId) return;
-
-      const rows = listArchivedGoalsForSession(sessionId).slice(0, 5);
-      if (rows.length === 0) {
-        api.ui.toast({ variant: 'info', message: 'No archived goals', duration: 3000 });
-        return;
-      }
-
-      const lines = rows.map((row) => {
-        const icon = row.status === 'complete' ? '✓' : '⏸';
-        return `${icon} ${truncate(row.objective, 35)}`;
-      });
-
-      api.ui.toast({
-        variant: 'info',
-        message: `Recent goals:\n${lines.join('\n')}`,
-        duration: 5000,
-      });
-    } catch {
-      api.ui.toast({ variant: 'error', message: 'Failed to list archived goals', duration: 3000 });
-    }
   }
 
   function progressLine(current: GoalState) {
@@ -342,6 +428,11 @@ function tokenLine(goal: GoalState): string {
     return `${formatNumber(goal.tokensUsed)} / ${formatNumber(goal.tokenBudget)} tokens`;
   }
   return `${formatNumber(goal.tokensUsed)} tokens`;
+}
+
+function compactUsageLine(goal: GoalState): string {
+  if (goal.tokenBudget !== null) return tokenLine(goal);
+  return formatTime(goal.timeUsedSeconds);
 }
 
 function formatNumber(n: number): string {

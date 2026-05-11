@@ -6,13 +6,12 @@ Persistent, session-scoped goal tracking with auto-continuation, token budgeting
 
 ## Features
 
-- **Session-Scoped Goals**: One active goal per session with full archive history
+- **Session-Scoped Goals**: One active goal per OpenCode session
 - **Token Budgeting**: Optional hard cap with automatic `budget_limited` status
 - **Auto-Continuation**: When a turn finishes and the goal is still active, the runtime automatically queues a continuation turn
 - **Wall-Clock & Token Accounting**: Tracks elapsed time and token consumption via SDK messages API
 - **Completion Audit Prompts**: Model is steered to perform rigorous completion verification before marking done
-- **Archive/Resume**: Previous goals are archived; can be listed and resumed
-- **CLI Wrapper**: Direct terminal commands without model involvement
+- **TUI Controls**: Create, replace, pause, resume, clear, and inspect goals from OpenCode's TUI
 
 ## Architecture
 
@@ -21,12 +20,11 @@ This plugin replicates Codex's goal mode within OpenCode's plugin boundaries:
 ```
 src/
   index.ts              # Plugin entry point with hooks
-  cli.ts                # Standalone CLI binary
   types.ts              # Core types (ThreadGoal, TokenUsage, etc.)
   db/
     connection.ts       # SQLite connection (bun:sqlite)
     schema.ts           # Table definitions + migrations
-    goals.ts            # Full CRUD (replicates goals.rs)
+    goals.ts            # CRUD, accounting, concurrency, and budget transitions
   runtime/
     state.ts            # GoalRuntimeState + event handlers
     accounting.ts       # Token/wall-clock delta calculations
@@ -75,7 +73,7 @@ The checkout is already wired for local development:
 - `.opencode/plugins/opencode-goals.ts` auto-loads the server/runtime plugin.
 - `tui.json` explicitly loads `./src/tui.tsx` for TUI integration.
 
-For a global local install, copy the built entrypoints and register them explicitly:
+For a global local file install, copy the built entrypoints and register them explicitly:
 
 ```bash
 cp dist/index.js ~/.config/opencode/plugins/opencode-goals.js
@@ -123,18 +121,17 @@ Or via file path:
 - **Active goal display** in the sidebar with status icon, objective, and progress
 - **Token progress bar** (when budget is set) showing usage percentage
 - **Time elapsed** counter
-- **Quick actions**: Pause / Resume / Clear buttons
+- **Summary actions**: Pause / Resume / Replace / Clear from the command palette
 
 ### Footer Status
 - Minimal status line showing active goal, token usage, and elapsed time
 
 ### Command Palette
 Press `Ctrl+P` or type `/` to access:
-- `Goals: Create Goal` — Opens dialog to set objective
-- `Goals: Show Status` — Toast notification with full goal details
+- `Goals: Create Goal` — Opens a dialog to set an objective
+- `Goals: Summary` or `/goal` — Opens the current goal summary/actions dialog
 - `Goals: Pause/Resume Goal` — Toggle goal state
-- `Goals: Clear Goal` — Archive and remove active goal
-- `Goals: List Archived` — Show recent archived goals
+- `Goals: Clear Goal` — Remove the active goal
 
 ### Toast Notifications
 - Goal created / paused / resumed / cleared
@@ -161,48 +158,36 @@ Create `.opencode/commands/goal.md` (included in this repo):
 /goal                          # Show current goal status
 /goal "Refactor auth module"   # Create a new goal
 /goal create "Implement OAuth" # Explicit create
+/goal create "Fix" --budget 5000
+/goal pause
+/goal resume
+/goal clear
 ```
-
-### CLI Wrapper
-
-For direct terminal control without model involvement:
-
-```bash
-# Install globally or use npx
-npm link  # makes `goal` command available
-
-# Commands
-goal status                          # Show current goal
-goal create "Refactor auth module"   # Create goal
-goal create "Implement OAuth" --budget 10000
-goal list                            # List active + archived goals
-goal pause                           # Pause active goal
-goal resume                          # Resume paused goal
-goal clear                           # Clear current goal (archives it)
-```
-
-The CLI operates on the **same SQLite database** as the plugin (`~/.config/opencode/goals.db`), so changes are immediately visible to the model.
 
 ## Database
 
 Stored at `~/.config/opencode/goals.db`:
 
 ```sql
--- Active goal (one per session, Codex exact)
-session_goals (session_id PRIMARY KEY, directory, goal_id, objective,
-               status, token_budget, tokens_used, time_used_seconds,
-               created_at_ms, updated_at_ms)
-
--- Archived goals (Option B history)
-goal_archive (id, session_id, directory, goal_id, objective,
-              status, token_budget, tokens_used, time_used_seconds,
-              created_at_ms, completed_at_ms, archived_at_ms)
+thread_goals (
+  thread_id PRIMARY KEY,
+  goal_id,
+  objective,
+  status,
+  token_budget,
+  tokens_used,
+  time_used_seconds,
+  created_at_ms,
+  updated_at_ms
+)
 ```
+
+The plugin owns this table and does not couple to OpenCode's private internal database. Older local `session_goals` rows are copied into `thread_goals` on startup when present.
 
 ## Goal Lifecycle
 
 ```
-User creates goal (create_goal)
+User creates goal (/goal, TUI, or create_goal)
     ↓
 Status: active → Auto-continuation on idle
     ↓
@@ -212,7 +197,7 @@ Budget exceeded? → Status: budget_limited + steering prompt
     ↓
 Model calls update_goal(status: complete)
     ↓
-Goal archived, counters preserved
+Goal removed after counters are returned to the model
 ```
 
 ## Prompt Engineering
@@ -240,9 +225,9 @@ This plugin operates within OpenCode's plugin API boundaries. These Codex featur
 | Codex Feature | Plugin Approximation |
 |---------------|----------------------|
 | Turn start/finish hooks | `tool.execute.after` + `session.idle` |
-| Interrupt → pause | Not detectable; use `/goal pause` or CLI |
+| Interrupt → pause | Not detectable; use `/goal pause` or the TUI pause action |
 | Native continuation turns | Simulated via `session.prompt()` |
-| TUI interactive menus | Static command templates only |
+| Invisible developer-role prompt injection | Simulated with plugin-safe session prompts |
 
 ## Development
 
@@ -250,7 +235,7 @@ This plugin operates within OpenCode's plugin API boundaries. These Codex featur
 npm install
 npm run build    # Compile TypeScript
 npm run dev      # Watch mode
-npm run cli      # Run CLI via bun
+npm test         # Typecheck, build, and run Bun tests
 ```
 
 ## License

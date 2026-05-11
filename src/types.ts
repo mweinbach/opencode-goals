@@ -3,8 +3,7 @@
 export type ThreadGoalStatus = 'active' | 'paused' | 'budget_limited' | 'complete';
 
 export interface ThreadGoal {
-  sessionId: string;
-  directory: string;
+  threadId: string;
   goalId: string;
   objective: string;
   status: ThreadGoalStatus;
@@ -60,22 +59,6 @@ export interface GoalAccountingSnapshot {
 export interface GoalContinuationCandidate {
   goalId: string;
   items: Array<{ role: string; content: string }>;
-}
-
-// Archive entry for historical goals
-export interface GoalArchiveEntry {
-  id: number;
-  sessionId: string;
-  directory: string;
-  goalId: string;
-  objective: string;
-  status: ThreadGoalStatus;
-  tokenBudget: number | null;
-  tokensUsed: number;
-  timeUsedSeconds: number;
-  createdAt: number;
-  completedAt: number | null;
-  archivedAt: number;
 }
 
 export const MAX_THREAD_GOAL_OBJECTIVE_CHARS = 4000;
