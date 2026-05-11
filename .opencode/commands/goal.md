@@ -1,6 +1,6 @@
 ---
 description: Create or manage a session goal for autonomous task pursuit
-agent: default
+agent: build
 ---
 
 $ARGUMENTS

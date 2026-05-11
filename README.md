@@ -42,21 +42,24 @@ src/
 
 ### From npm (recommended)
 
-Add to your `opencode.json`:
+Add the server/runtime plugin to your `opencode.json`:
 ```json
 {
   "plugin": ["opencode-goals"]
 }
 ```
 
-Add to your `tui.json`:
+Add the TUI plugin to your `tui.json`:
 ```json
 {
   "plugin": ["opencode-goals"]
 }
 ```
 
-OpenCode auto-installs npm plugins on startup.
+OpenCode auto-installs npm plugins on startup. The package exposes separate OpenCode entrypoints:
+
+- `.` / `./server` for the server/runtime plugin and custom model tools
+- `./tui` for the TUI plugin
 
 ### From local files
 
@@ -65,15 +68,21 @@ git clone https://github.com/mweinbach/opencode-goals.git
 cd opencode-goals
 npm install
 npm run build
-
-# For server plugin (auto-discovered from .opencode/plugins/)
-cp .opencode/plugins/opencode-goals.ts ~/.config/opencode/plugins/
-
-# For TUI plugin (must be listed in tui.json)
-cp src/tui.tsx ~/.config/opencode/plugins/opencode-goals-tui.tsx
 ```
 
-Then add to `~/.config/opencode/tui.json`:
+The checkout is already wired for local development:
+
+- `.opencode/plugins/opencode-goals.ts` auto-loads the server/runtime plugin.
+- `tui.json` explicitly loads `./src/tui.tsx` for TUI integration.
+
+For a global local install, copy the built entrypoints and register them explicitly:
+
+```bash
+cp dist/index.js ~/.config/opencode/plugins/opencode-goals.js
+cp dist/tui.tsx ~/.config/opencode/plugins/opencode-goals-tui.tsx
+```
+
+Then add the TUI entry to `~/.config/opencode/tui.json`:
 ```json
 {
   "plugin": [

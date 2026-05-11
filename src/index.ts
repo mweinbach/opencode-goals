@@ -1,5 +1,5 @@
-import type { Plugin } from '@opencode-ai/plugin';
 import type { Event } from '@opencode-ai/sdk';
+import type { Plugin, PluginModule } from '@opencode-ai/plugin';
 import { initializeSchema } from './db/schema.js';
 import { getThreadGoal } from './db/goals.js';
 import { getGoalTool } from './tools/get_goal.js';
@@ -16,7 +16,7 @@ import {
 } from './runtime/state.js';
 import type { GoalRuntimeState } from './runtime/state.js';
 
-// Map session IDs to their runtime state
+const pluginId = 'opencode-goals';
 const runtimeStates = new Map<string, GoalRuntimeState>();
 
 function getOrCreateState(sessionId: string): GoalRuntimeState {
@@ -28,269 +28,184 @@ function getOrCreateState(sessionId: string): GoalRuntimeState {
   return state;
 }
 
-function getState(sessionId: string): GoalRuntimeState | undefined {
-  return runtimeStates.get(sessionId);
-}
-
 function removeState(sessionId: string): void {
   runtimeStates.delete(sessionId);
 }
 
-export const OpenCodeGoalsPlugin: Plugin = async ({ directory, client }) => {
-  // Initialize database
+export const OpenCodeGoalsPlugin: Plugin = async ({ client }) => {
   initializeSchema();
 
-  await client.app.log({
-    body: {
-      service: 'opencode-goals',
-      level: 'info',
-      message: 'Goals plugin initialized',
-    },
-  });
-
-  // Subscribe to events for session lifecycle management
-  let eventStream: { stream: AsyncIterable<Event>; cancel?: () => void } | null = null;
-
-  try {
-    eventStream = await client.event.subscribe();
-
-    // Start event processing loop
-    (async () => {
-      if (!eventStream) return;
-      for await (const event of eventStream.stream) {
-        await handleEvent(event, client);
-      }
-    })().catch(() => {
-      // Event stream errors are non-fatal
-    });
-  } catch {
-    // Event subscription may fail in some contexts
-  }
+  await client.app
+    .log({
+      body: {
+        service: pluginId,
+        level: 'info',
+        message: 'Goals plugin initialized',
+      },
+    })
+    .catch(() => undefined);
 
   return {
-    // ─── Model Tools ─────────────────────────────────────────────────────────
     tool: {
       get_goal: getGoalTool,
       create_goal: createGoalTool,
       update_goal: updateGoalTool,
     },
 
-    // ─── Session Lifecycle Hooks ─────────────────────────────────────────────
-    'session.created': async () => {
-      // We can't easily get the new session ID here, so we rely on
-      // the first tool execution or event to establish state
-    },
-
-    'session.idle': async () => {
-      // Try to get current session from project
-      try {
-        const sessions = await client.session.list();
-        const activeSession = sessions.data?.find((s: any) => s.status === 'active');
-        if (!activeSession?.id) return;
-
-        const sessionId = activeSession.id;
-        const state = getOrCreateState(sessionId);
-
-        // Suppression check: if last continuation turn had 0 tool calls, stop looping
-        if (state.isContinuationTurn && state.toolsExecutedThisTurn === 0) {
-          state.continuationSuppressed = true;
-          state.isContinuationTurn = false;
-          await client.app.log({
-            body: {
-              service: 'opencode-goals',
-              level: 'info',
-              message: 'Continuation suppressed: no autonomous activity in last turn',
-            },
-          });
-          return;
-        }
-
-        // Reset continuation flag for next check
-        state.isContinuationTurn = false;
-
-        // Try to continue goal if active
-        const goal = getThreadGoal(sessionId);
-        if (goal?.status === 'active') {
-          const continued = await maybeContinueGoal(state, client, sessionId);
-          if (continued) {
-            await client.app.log({
-              body: {
-                service: 'opencode-goals',
-                level: 'info',
-                message: `Auto-continued goal: ${goal.objective.slice(0, 50)}...`,
-              },
-            });
-          }
-        }
-      } catch {
-        // Silently fail
-      }
-    },
-
-    'session.deleted': async () => {
-      // Clean up state when session is deleted
-      try {
-        const sessions = await client.session.list();
-        const activeIds = new Set(sessions.data?.map((s: any) => s.id) ?? []);
-        for (const [sessionId] of runtimeStates) {
-          if (!activeIds.has(sessionId)) {
-            removeState(sessionId);
-          }
-        }
-      } catch {
-        // Silently fail
-      }
-    },
-
-    // ─── Tool Execution Hooks ────────────────────────────────────────────────
-    'tool.execute.before': async () => {
-      // Capture token baseline before tool execution if we have an active turn
-      try {
-        const sessions = await client.session.list();
-        const activeSession = sessions.data?.find((s: any) => s.status === 'active');
-        if (!activeSession?.id) return;
-
-        const sessionId = activeSession.id;
-        const state = getOrCreateState(sessionId);
-
-        // We can't get token usage here easily, so we'll do it in after hook
-      } catch {
-        // Silently fail
-      }
+    event: async ({ event }) => {
+      await handleEvent(event, client);
     },
 
     'tool.execute.after': async (input) => {
-      try {
-        const sessions = await client.session.list();
-        const activeSession = sessions.data?.find((s: any) => s.status === 'active');
-        if (!activeSession?.id) return;
+      const sessionId = input.sessionID;
+      const state = getOrCreateState(sessionId);
+      const goal = getThreadGoal(sessionId);
 
-        const sessionId = activeSession.id;
-        const state = getOrCreateState(sessionId);
-        const goal = getThreadGoal(sessionId);
+      if (!goal || (goal.status !== 'active' && goal.status !== 'budget_limited')) return;
 
-        if (!goal || (goal.status !== 'active' && goal.status !== 'budget_limited')) return;
+      recordToolExecution(state);
 
-        // Get current messages to extract token usage
-        const messages = await client.session.messages({ path: { id: sessionId } });
-        const lastMessage = messages.data?.[messages.data.length - 1];
+      const currentUsage = await readLatestTokenUsage(client, sessionId);
+      if (!currentUsage) return;
 
-        const messageInfo: any = lastMessage?.info;
-        if (messageInfo?.tokens) {
-          const tokens: any = messageInfo.tokens;
+      if (!state.accounting.turn || state.accounting.turn.turnId !== currentUsage.turnId) {
+        await handleTurnStarted(state, sessionId, currentUsage.turnId, currentUsage.tokens);
+      }
 
-          const currentUsage = {
-            input: tokens.input ?? 0,
-            output: tokens.output ?? 0,
-            reasoning: tokens.reasoning ?? 0,
-            cache: {
-              read: tokens.cache?.read ?? 0,
-              write: tokens.cache?.write ?? 0,
-            },
-          };
+      const shouldSteer = await accountGoalProgress(
+        state,
+        sessionId,
+        currentUsage.tokens,
+        input.tool === 'update_goal' ? 'suppressed' : 'allowed'
+      );
 
-          // If this is the first tool in a turn, establish baseline
-          if (!state.accounting.turn) {
-            const turnId = messageInfo.id || crypto.randomUUID();
-            handleTurnStarted(state, sessionId, turnId, currentUsage);
-          }
-
-          // Track that this turn had tool activity
-          recordToolExecution(state);
-
-          // Account progress (suppressed for update_goal tool)
-          const isUpdateGoal = input.tool === 'update_goal';
-          const shouldSteer = await accountGoalProgress(
-            state,
-            sessionId,
-            currentUsage,
-            isUpdateGoal ? 'suppressed' : 'allowed'
-          );
-
-          if (shouldSteer) {
-            await handleBudgetLimitSteering(state, client as any, sessionId);
-          }
-        }
-      } catch {
-        // Silently fail
+      if (shouldSteer) {
+        await handleBudgetLimitSteering(state, client, sessionId);
       }
     },
 
-    // ─── Compaction Hook ─────────────────────────────────────────────────────
-    'experimental.session.compacting': async (_input, output) => {
-      try {
-        const sessions = await client.session.list();
-        const activeSession = sessions.data?.find((s: any) => s.status === 'active');
-        if (!activeSession?.id) return;
+    'experimental.session.compacting': async (input, output) => {
+      const goal = getThreadGoal(input.sessionID);
+      if (!goal || goal.status !== 'active') return;
 
-        const sessionId = activeSession.id;
-        const goal = getThreadGoal(sessionId);
+      const remainingTokens =
+        goal.tokenBudget !== null
+          ? Math.max(0, goal.tokenBudget - goal.tokensUsed)
+          : 'unbounded';
 
-        if (goal && goal.status === 'active') {
-          const remainingTokens =
-            goal.tokenBudget !== null
-              ? Math.max(0, goal.tokenBudget - goal.tokensUsed)
-              : 'unbounded';
-
-          output.context.push(
-            `## Active Goal\n` +
-              `Objective: ${goal.objective}\n` +
-              `Status: ${goal.status}\n` +
-              `Tokens used: ${goal.tokensUsed}${goal.tokenBudget !== null ? ` / ${goal.tokenBudget}` : ''}\n` +
-              `Remaining: ${remainingTokens}\n` +
-              `Time: ${goal.timeUsedSeconds}s\n\n` +
-              `This goal is in progress and should be preserved across compaction.`
-          );
-        }
-      } catch {
-        // Silently fail
-      }
+      output.context.push(
+        `## Active Goal\n` +
+          `Objective: ${goal.objective}\n` +
+          `Status: ${goal.status}\n` +
+          `Tokens used: ${goal.tokensUsed}${goal.tokenBudget !== null ? ` / ${goal.tokenBudget}` : ''}\n` +
+          `Remaining: ${remainingTokens}\n` +
+          `Time: ${goal.timeUsedSeconds}s\n\n` +
+          `This goal is in progress and should be preserved across compaction.`
+      );
     },
   };
 };
 
-// ─── Event Handler ───────────────────────────────────────────────────────────
+type TokenUsage = {
+  input: number;
+  output: number;
+  reasoning: number;
+  cache: {
+    read: number;
+    write: number;
+  };
+};
 
-async function handleEvent(event: Event, client: any): Promise<void> {
-  try {
-    const eventType = event.type;
-    const properties = (event as any).properties || {};
+async function readLatestTokenUsage(
+  client: Parameters<Plugin>[0]['client'],
+  sessionId: string
+): Promise<{ turnId: string; tokens: TokenUsage } | null> {
+  const messages = await client.session.messages({ path: { id: sessionId } });
+  let latest: any;
+  const list = messages.data ?? [];
+  for (let index = list.length - 1; index >= 0; index -= 1) {
+    if ((list[index] as any).info?.tokens) {
+      latest = list[index];
+      break;
+    }
+  }
+  const info: any = latest?.info;
+  const tokens: any = info?.tokens;
+  if (!tokens) return null;
 
-    if (eventType === 'session.idle') {
-      const sessionId = properties.sessionID || properties.sessionId;
-      if (!sessionId) return;
+  return {
+    turnId: info.id ?? crypto.randomUUID(),
+    tokens: {
+      input: tokens.input ?? 0,
+      output: tokens.output ?? 0,
+      reasoning: tokens.reasoning ?? 0,
+      cache: {
+        read: tokens.cache?.read ?? 0,
+        write: tokens.cache?.write ?? 0,
+      },
+    },
+  };
+}
 
-      const state = getOrCreateState(sessionId);
-      const goal = getThreadGoal(sessionId);
+async function handleEvent(event: Event, client: Parameters<Plugin>[0]['client']): Promise<void> {
+  const eventType = event.type;
+  const properties = (event as any).properties ?? {};
+  const sessionId = properties.sessionID ?? properties.sessionId ?? properties.session?.id;
 
-      if (goal?.status === 'active') {
-        const continued = await maybeContinueGoal(state, client, sessionId);
-        if (continued) {
-          await client.app.log({
-            body: {
-              service: 'opencode-goals',
-              level: 'info',
-              message: `Auto-continued goal: ${goal.objective.slice(0, 50)}...`,
-            },
-          });
-        }
-      }
+  if (eventType === 'session.deleted' && sessionId) {
+    removeState(sessionId);
+    return;
+  }
+
+  if (eventType === 'session.idle' && sessionId) {
+    const state = getOrCreateState(sessionId);
+    const goal = getThreadGoal(sessionId);
+    if (!goal || goal.status !== 'active') return;
+
+    if (state.isContinuationTurn && state.toolsExecutedThisTurn === 0) {
+      state.continuationSuppressed = true;
+      state.isContinuationTurn = false;
+      await client.app
+        .log({
+          body: {
+            service: pluginId,
+            level: 'info',
+            message: 'Continuation suppressed: no autonomous activity in last turn',
+          },
+        })
+        .catch(() => undefined);
+      return;
     }
 
-    if (eventType === 'message.updated' || eventType === 'message.part.updated') {
-      const sessionId = properties.sessionID || properties.sessionId;
-      if (!sessionId) return;
+    state.isContinuationTurn = false;
 
-      const state = getOrCreateState(sessionId);
-
-      // Reset continuation suppression on new user input
-      if (properties.role === 'user') {
-        resetContinuationSuppression(state);
-      }
+    const continued = await maybeContinueGoal(state, client, sessionId);
+    if (continued) {
+      await client.app
+        .log({
+          body: {
+            service: pluginId,
+            level: 'info',
+            message: `Auto-continued goal: ${goal.objective.slice(0, 50)}...`,
+          },
+        })
+        .catch(() => undefined);
     }
-  } catch {
-    // Event handling errors are non-fatal
+    return;
+  }
+
+  if (eventType === 'message.updated' || eventType === 'message.part.updated') {
+    if (!sessionId) return;
+    const role = properties.role ?? properties.message?.role ?? properties.info?.role;
+    if (role === 'user') {
+      resetContinuationSuppression(getOrCreateState(sessionId));
+    }
   }
 }
 
-export default OpenCodeGoalsPlugin;
+const plugin: PluginModule & { id: string } = {
+  id: pluginId,
+  server: OpenCodeGoalsPlugin,
+};
+
+export default plugin;

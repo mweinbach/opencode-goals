@@ -1,5 +1,5 @@
 import { tool } from '@opencode-ai/plugin';
-import { updateThreadGoal, getThreadGoal } from '../db/goals.js';
+import { completeThreadGoal, getThreadGoal } from '../db/goals.js';
 
 export const updateGoalTool = tool({
   description:
@@ -27,10 +27,7 @@ export const updateGoalTool = tool({
         });
       }
 
-      const updated = updateThreadGoal(context.sessionID, {
-        status: 'complete',
-        expectedGoalId: current.goalId,
-      });
+      const updated = completeThreadGoal(context.sessionID, current.goalId);
 
       if (!updated) {
         return JSON.stringify({

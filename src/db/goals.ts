@@ -142,6 +142,27 @@ export function updateThreadGoal(
   return updated;
 }
 
+export function completeThreadGoal(
+  sessionId: string,
+  expectedGoalId?: string
+): ThreadGoal | null {
+  const db = getDb();
+  const updated = updateThreadGoal(sessionId, {
+    status: 'complete',
+    expectedGoalId,
+  });
+
+  if (!updated || updated.status !== 'complete') return updated;
+
+  archiveCurrentGoal(sessionId);
+  db.run('DELETE FROM session_goals WHERE session_id = ? AND goal_id = ?', [
+    sessionId,
+    updated.goalId,
+  ]);
+
+  return updated;
+}
+
 export function pauseActiveThreadGoal(sessionId: string): ThreadGoal | null {
   const db = getDb();
   const now = nowMs();
