@@ -364,3 +364,88 @@ test('server sums step-finish token usage for live multi-step accounting', async
 
   expect(getThreadGoal('step-finish-thread')?.tokensUsed).toBe(160);
 });
+
+test('manual stop pauses active goal and suppresses idle continuation injection', async () => {
+  initializeSchema();
+  replaceThreadGoal('manual-stop-thread', 'do not auto continue after stop', 'active', null);
+
+  const latestMessage = {
+    info: {
+      id: 'assistant-aborted',
+      role: 'assistant',
+      error: {
+        name: 'MessageAbortedError',
+        message: 'Aborted',
+      },
+    },
+    parts: [],
+  };
+  const prompts: unknown[] = [];
+
+  const mod = await import('../src/index.js');
+  const hooks = await mod.default.server({
+    client: {
+      app: {
+        log: async () => ({}),
+      },
+      session: {
+        messages: async () => ({ data: [latestMessage] }),
+        prompt: async (input: unknown) => {
+          prompts.push(input);
+          return {};
+        },
+      },
+    },
+  } as any);
+
+  await hooks.event?.({
+    event: {
+      type: 'session.idle',
+      properties: {
+        sessionID: 'manual-stop-thread',
+      },
+    } as any,
+  });
+
+  expect(getThreadGoal('manual-stop-thread')?.status).toBe('paused');
+  expect(prompts).toHaveLength(0);
+});
+
+test('interrupted part update pauses active goal before idle', async () => {
+  initializeSchema();
+  replaceThreadGoal('interrupted-part-thread', 'pause on part interruption', 'active', null);
+
+  const mod = await import('../src/index.js');
+  const hooks = await mod.default.server({
+    client: {
+      app: {
+        log: async () => ({}),
+      },
+      session: {
+        messages: async () => ({ data: [] }),
+        prompt: async () => ({}),
+      },
+    },
+  } as any);
+
+  await hooks.event?.({
+    event: {
+      type: 'message.part.updated',
+      properties: {
+        sessionID: 'interrupted-part-thread',
+        part: {
+          type: 'tool',
+          state: {
+            status: 'error',
+            error: 'Tool execution aborted',
+            metadata: {
+              interrupted: true,
+            },
+          },
+        },
+      },
+    } as any,
+  });
+
+  expect(getThreadGoal('interrupted-part-thread')?.status).toBe('paused');
+});

@@ -19,6 +19,7 @@ import {
   maybeContinueGoal,
   resetContinuationSuppression,
   recordToolExecution,
+  suppressContinuation,
 } from './runtime/state.js';
 import type { GoalRuntimeState } from './runtime/state.js';
 import { validateThreadGoalObjective } from './types.js';
@@ -191,6 +192,11 @@ async function handleEvent(event: Event, client: Parameters<Plugin>[0]['client']
 
     await accountLatestGoalUsage(state, client, sessionId, 'suppressed');
 
+    if (await latestTurnWasInterrupted(client, sessionId)) {
+      await pauseGoalAfterManualStop(state, client, sessionId);
+      return;
+    }
+
     if (state.isContinuationTurn && state.toolsExecutedThisTurn === 0) {
       state.continuationSuppressed = true;
       state.isContinuationTurn = false;
@@ -232,6 +238,11 @@ async function handleEvent(event: Event, client: Parameters<Plugin>[0]['client']
     }
 
     const state = getOrCreateState(sessionId);
+    if (isInterruptedMessage({ info: properties.info ?? properties.message, parts: properties.parts })) {
+      await pauseGoalAfterManualStop(state, client, sessionId);
+      return;
+    }
+
     const shouldSteer = await accountLatestGoalUsage(state, client, sessionId, 'allowed');
     if (shouldSteer) {
       await handleBudgetLimitSteering(state, client, sessionId);
@@ -246,11 +257,78 @@ async function handleEvent(event: Event, client: Parameters<Plugin>[0]['client']
   if (eventType === 'message.part.updated') {
     if (!sessionId) return;
     const state = getOrCreateState(sessionId);
+    if (isInterruptedPart(properties.part)) {
+      await pauseGoalAfterManualStop(state, client, sessionId);
+      return;
+    }
+
     const shouldSteer = await accountLatestGoalUsage(state, client, sessionId, 'allowed');
     if (shouldSteer) {
       await handleBudgetLimitSteering(state, client, sessionId);
     }
   }
+}
+
+async function pauseGoalAfterManualStop(
+  state: GoalRuntimeState,
+  client: Parameters<Plugin>[0]['client'],
+  sessionId: string
+): Promise<boolean> {
+  suppressContinuation(state);
+  state.isContinuationTurn = false;
+
+  const paused = pauseActiveThreadGoal(sessionId);
+  if (!paused) return false;
+
+  await client.app
+    .log({
+      body: {
+        service: pluginId,
+        level: 'info',
+        message: `Goal paused after manual stop: ${paused.objective.slice(0, 50)}...`,
+      },
+    })
+    .catch(() => undefined);
+
+  return true;
+}
+
+async function latestTurnWasInterrupted(
+  client: Parameters<Plugin>[0]['client'],
+  sessionId: string
+): Promise<boolean> {
+  const messages = await client.session.messages({ path: { id: sessionId } });
+  const latestAssistant = [...(messages.data ?? [])]
+    .reverse()
+    .find((message: any) => message?.info?.role === 'assistant');
+
+  return isInterruptedMessage(latestAssistant);
+}
+
+function isInterruptedMessage(message: any): boolean {
+  if (!message) return false;
+  if (isAbortLikeError(message.info?.error ?? message.error)) return true;
+  return Boolean(message.parts?.some((part: any) => isInterruptedPart(part)));
+}
+
+function isInterruptedPart(part: any): boolean {
+  if (!part) return false;
+  const state = part.state;
+  return (
+    state?.metadata?.interrupted === true ||
+    state?.error === 'Tool execution aborted' ||
+    part.errorText === '[Tool execution was interrupted]'
+  );
+}
+
+function isAbortLikeError(error: any): boolean {
+  if (!error) return false;
+
+  const name = String(error.name ?? error.type ?? error.code ?? '');
+  if (/abort|interrupt/i.test(name)) return true;
+
+  const message = String(error.message ?? error.data?.message ?? '');
+  return /abort|interrupt/i.test(message);
 }
 
 async function accountLatestGoalUsage(

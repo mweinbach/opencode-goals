@@ -5,6 +5,7 @@ import { initializeSchema } from './db/schema.js';
 import {
   deleteThreadGoal,
   getThreadGoal,
+  pauseActiveThreadGoal,
   replaceThreadGoal,
   updateThreadGoal,
 } from './db/goals.js';
@@ -243,7 +244,14 @@ const tui: TuiPlugin = async (api) => {
   api.event.on('session.updated', () => void fetchGoal());
   api.event.on('session.status', () => void fetchGoal());
   api.event.on('session.idle', () => void fetchGoal());
-  api.event.on('message.updated', () => void fetchGoal());
+  api.event.on('message.updated', (event: any) => {
+    maybePauseAfterInterruptedEvent(event);
+    void fetchGoal();
+  });
+  api.event.on('message.part.updated', (event: any) => {
+    maybePauseAfterInterruptedEvent(event);
+    void fetchGoal();
+  });
 
   api.lifecycle.onDispose(() => {
     clearInterval(pollInterval);
@@ -488,6 +496,14 @@ const tui: TuiPlugin = async (api) => {
       </box>
     );
   }
+
+  function maybePauseAfterInterruptedEvent(event: any): void {
+    const sessionId = event?.properties?.sessionID;
+    if (typeof sessionId !== 'string') return;
+    if (!isInterruptedEvent(event)) return;
+
+    pauseActiveThreadGoal(sessionId);
+  }
 };
 
 const plugin: TuiPluginModule & { id: string } = {
@@ -538,6 +554,31 @@ export function displayedTimeUsedSeconds(
 
   const liveDelta = Math.max(0, Math.floor((nowMs - goal.updatedAt) / 1000));
   return goal.timeUsedSeconds + liveDelta;
+}
+
+function isInterruptedEvent(event: any): boolean {
+  const properties = event?.properties ?? {};
+  if (isInterruptedPart(properties.part)) return true;
+  return isAbortLikeError(properties.info?.error ?? properties.message?.error);
+}
+
+function isInterruptedPart(part: any): boolean {
+  if (!part) return false;
+  const state = part.state;
+  return (
+    state?.metadata?.interrupted === true ||
+    state?.error === 'Tool execution aborted' ||
+    part.errorText === '[Tool execution was interrupted]'
+  );
+}
+
+function isAbortLikeError(error: any): boolean {
+  if (!error) return false;
+  const name = String(error.name ?? error.type ?? error.code ?? '');
+  if (/abort|interrupt/i.test(name)) return true;
+
+  const message = String(error.message ?? error.data?.message ?? '');
+  return /abort|interrupt/i.test(message);
 }
 
 function sameGoal(left: GoalState | null, right: GoalState | null): boolean {
