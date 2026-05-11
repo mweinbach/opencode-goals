@@ -33,6 +33,9 @@ test('tui displayed time advances while the active session is running', async ()
     status: 'active' as const,
     tokenBudget: null,
     tokensUsed: 0,
+    inputTokensUsed: 0,
+    cachedInputTokensUsed: 0,
+    outputTokensUsed: 0,
     timeUsedSeconds: 5,
     createdAt: 0,
     updatedAt: 1_000,
@@ -243,6 +246,8 @@ test('tui create goal opens a new session and starts the goal turn from home', a
     expect(promptConfirm).toBeFunction();
 
     promptConfirm?.('Write tests for goal creation');
+    expect(sessionCreates).toHaveLength(0);
+    promptConfirm?.('2500');
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(sessionCreates).toHaveLength(1);
@@ -251,7 +256,9 @@ test('tui create goal opens a new session and starts the goal turn from home', a
       title: 'Goal: Write tests for goal creation',
     });
     expect(navigations).toEqual([{ name: 'session', params: { sessionID: 'new-session' } }]);
-    expect(getThreadGoal('new-session')?.objective).toBe('Write tests for goal creation');
+    const createdGoal = getThreadGoal('new-session');
+    expect(createdGoal?.objective).toBe('Write tests for goal creation');
+    expect(createdGoal?.tokenBudget).toBe(2500);
     expect(prompts).toHaveLength(1);
     expect(prompts[0]).toMatchObject({
       sessionID: 'new-session',
@@ -261,6 +268,7 @@ test('tui create goal opens a new session and starts the goal turn from home', a
     expect(prompts[0].parts[0].text).toContain(
       '<untrusted_objective>\nWrite tests for goal creation\n</untrusted_objective>'
     );
+    expect(prompts[0].parts[0].text).toContain('Token budget: 2500');
     expect(toasts[0]).toMatchObject({
       variant: 'success',
       message: 'Goal thread started: Write tests for goal creation',

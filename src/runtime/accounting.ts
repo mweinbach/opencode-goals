@@ -3,6 +3,7 @@ import type {
   GoalAccountingSnapshot,
   ThreadGoalAccountingMode,
   ThreadGoal,
+  ThreadGoalTokenDelta,
 } from '../types.js';
 
 /**
@@ -15,13 +16,39 @@ export function goalTokenDeltaForUsage(usage: TokenUsage): number {
   return nonCachedInput + Math.max(0, usage.output);
 }
 
+export function goalTokenBreakdownForUsage(usage: TokenUsage): ThreadGoalTokenDelta {
+  const cachedInputTokens = Math.max(0, usage.cache.read);
+  const inputTokens = Math.max(0, usage.input - cachedInputTokens);
+  const outputTokens = Math.max(0, usage.output);
+
+  return {
+    billableTokens: inputTokens + outputTokens,
+    inputTokens,
+    cachedInputTokens,
+    outputTokens,
+  };
+}
+
 export function computeTokenDelta(
   previous: TokenUsage,
   current: TokenUsage
 ): number {
-  const prevTotal = goalTokenDeltaForUsage(previous);
-  const currTotal = goalTokenDeltaForUsage(current);
-  return Math.max(0, currTotal - prevTotal);
+  return computeTokenBreakdownDelta(previous, current).billableTokens;
+}
+
+export function computeTokenBreakdownDelta(
+  previous: TokenUsage,
+  current: TokenUsage
+): ThreadGoalTokenDelta {
+  const prev = goalTokenBreakdownForUsage(previous);
+  const curr = goalTokenBreakdownForUsage(current);
+
+  return {
+    billableTokens: Math.max(0, curr.billableTokens - prev.billableTokens),
+    inputTokens: Math.max(0, curr.inputTokens - prev.inputTokens),
+    cachedInputTokens: Math.max(0, curr.cachedInputTokens - prev.cachedInputTokens),
+    outputTokens: Math.max(0, curr.outputTokens - prev.outputTokens),
+  };
 }
 
 export function computeWallClockDelta(lastAccountedAt: number): number {
@@ -63,14 +90,25 @@ export function accountTurnProgress(
   currentTokenUsage: TokenUsage
 ): {
   tokenDelta: number;
+  tokenBreakdownDelta: ThreadGoalTokenDelta;
   timeDeltaSeconds: number;
   expectedGoalId: string | null;
 } {
   if (!snapshot.turn || !snapshot.turn.activeGoalId) {
-    return { tokenDelta: 0, timeDeltaSeconds: 0, expectedGoalId: null };
+    return {
+      tokenDelta: 0,
+      tokenBreakdownDelta: {
+        billableTokens: 0,
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+      },
+      timeDeltaSeconds: 0,
+      expectedGoalId: null,
+    };
   }
 
-  const tokenDelta = computeTokenDelta(
+  const tokenBreakdownDelta = computeTokenBreakdownDelta(
     snapshot.turn.lastAccountedTokenUsage,
     currentTokenUsage
   );
@@ -78,7 +116,8 @@ export function accountTurnProgress(
   const timeDeltaSeconds = computeWallClockDelta(snapshot.wallClock.lastAccountedAt);
 
   return {
-    tokenDelta,
+    tokenDelta: tokenBreakdownDelta.billableTokens,
+    tokenBreakdownDelta,
     timeDeltaSeconds,
     expectedGoalId: snapshot.turn.activeGoalId,
   };

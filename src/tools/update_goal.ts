@@ -37,7 +37,7 @@ export const updateGoalTool = tool({
 
       const completionBudgetReport =
         updated.tokenBudget !== null
-          ? `Goal achieved. Report final token usage to the user: tokens used: ${updated.tokensUsed} of ${updated.tokenBudget}; time used: ${updated.timeUsedSeconds} seconds.`
+          ? `Goal achieved. Report final token usage to the user: tokens used: ${updated.tokensUsed} of ${updated.tokenBudget}; input: ${updated.inputTokensUsed}; cached input: ${updated.cachedInputTokensUsed}; output: ${updated.outputTokensUsed}; time used: ${updated.timeUsedSeconds} seconds.`
           : null;
 
       return JSON.stringify({
@@ -47,6 +47,9 @@ export const updateGoalTool = tool({
           status: updated.status,
           tokenBudget: updated.tokenBudget,
           tokensUsed: updated.tokensUsed,
+          inputTokensUsed: updated.inputTokensUsed,
+          cachedInputTokensUsed: updated.cachedInputTokensUsed,
+          outputTokensUsed: updated.outputTokensUsed,
           timeUsedSeconds: updated.timeUsedSeconds,
           createdAt: updated.createdAt,
           updatedAt: updated.updatedAt,

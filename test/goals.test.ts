@@ -14,7 +14,9 @@ import {
   updateThreadGoal,
 } from '../src/db/goals.js';
 import {
+  computeTokenBreakdownDelta,
   computeTokenDelta,
+  goalTokenBreakdownForUsage,
   goalTokenDeltaForUsage,
 } from '../src/runtime/accounting.js';
 import { buildBudgetLimitPrompt, buildContinuationPrompt } from '../src/prompts/builders.js';
@@ -65,6 +67,9 @@ test('schema creates thread_goals and migrates legacy session_goals rows', () =>
   expect(migrated?.threadId).toBe('session-a');
   expect(migrated?.objective).toBe('legacy goal');
   expect(migrated?.tokensUsed).toBe(7);
+  expect(migrated?.inputTokensUsed).toBe(7);
+  expect(migrated?.cachedInputTokensUsed).toBe(0);
+  expect(migrated?.outputTokensUsed).toBe(0);
   expect(migrated?.timeUsedSeconds).toBe(11);
 });
 
@@ -100,6 +105,9 @@ test('accounting clamps deltas, respects expected goal id, and promotes active g
   expect(updated.type).toBe('updated');
   expect(updated.goal.status).toBe('budget_limited');
   expect(updated.goal.tokensUsed).toBe(12);
+  expect(updated.goal.inputTokensUsed).toBe(12);
+  expect(updated.goal.cachedInputTokensUsed).toBe(0);
+  expect(updated.goal.outputTokensUsed).toBe(0);
   expect(updated.goal.timeUsedSeconds).toBe(4);
 });
 
@@ -159,11 +167,37 @@ test('token accounting excludes cached input and never returns negative deltas',
   ).toBe(50);
 
   expect(
+    goalTokenBreakdownForUsage({
+      input: 100,
+      output: 30,
+      reasoning: 0,
+      cache: { read: 80, write: 0 },
+    })
+  ).toEqual({
+    billableTokens: 50,
+    inputTokens: 20,
+    cachedInputTokens: 80,
+    outputTokens: 30,
+  });
+
+  expect(
     computeTokenDelta(
       { input: 100, output: 50, reasoning: 0, cache: { read: 0, write: 0 } },
       { input: 80, output: 30, reasoning: 0, cache: { read: 0, write: 0 } }
     )
   ).toBe(0);
+
+  expect(
+    computeTokenBreakdownDelta(
+      { input: 100, output: 20, reasoning: 0, cache: { read: 40, write: 0 } },
+      { input: 120, output: 35, reasoning: 0, cache: { read: 45, write: 0 } }
+    )
+  ).toEqual({
+    billableTokens: 30,
+    inputTokens: 15,
+    cachedInputTokens: 5,
+    outputTokens: 15,
+  });
 });
 
 test('prompts render unbudgeted goals and XML-escape objectives', () => {
@@ -174,6 +208,9 @@ test('prompts render unbudgeted goals and XML-escape objectives', () => {
     status: 'active' as const,
     tokenBudget: null,
     tokensUsed: 12,
+    inputTokensUsed: 7,
+    cachedInputTokensUsed: 3,
+    outputTokensUsed: 5,
     timeUsedSeconds: 34,
     createdAt: 1,
     updatedAt: 2,
@@ -181,8 +218,9 @@ test('prompts render unbudgeted goals and XML-escape objectives', () => {
 
   const continuation = buildContinuationPrompt(goal);
   expect(continuation).toContain('finish &lt;tests&gt; &amp; report');
-  expect(continuation).toContain('Token budget: none');
-  expect(continuation).toContain('Tokens remaining: unbounded');
+  expect(continuation).not.toContain('Token budget');
+  expect(continuation).not.toContain('Tokens remaining');
+  expect(continuation).toContain('input 7, cached 3, output 5');
 
   const budget = buildBudgetLimitPrompt({ ...goal, tokenBudget: 100 });
   expect(budget).toContain('finish &lt;tests&gt; &amp; report');
@@ -275,6 +313,9 @@ test('server accounts message updates from the first observed token usage', asyn
   });
 
   expect(getThreadGoal('message-update-thread')?.tokensUsed).toBe(80);
+  expect(getThreadGoal('message-update-thread')?.inputTokensUsed).toBe(60);
+  expect(getThreadGoal('message-update-thread')?.cachedInputTokensUsed).toBe(40);
+  expect(getThreadGoal('message-update-thread')?.outputTokensUsed).toBe(20);
 
   latestMessage = {
     ...latestMessage,
@@ -300,6 +341,9 @@ test('server accounts message updates from the first observed token usage', asyn
   });
 
   expect(getThreadGoal('message-update-thread')?.tokensUsed).toBe(90);
+  expect(getThreadGoal('message-update-thread')?.inputTokensUsed).toBe(60);
+  expect(getThreadGoal('message-update-thread')?.cachedInputTokensUsed).toBe(40);
+  expect(getThreadGoal('message-update-thread')?.outputTokensUsed).toBe(30);
 });
 
 test('server sums step-finish token usage for live multi-step accounting', async () => {
@@ -363,6 +407,9 @@ test('server sums step-finish token usage for live multi-step accounting', async
   });
 
   expect(getThreadGoal('step-finish-thread')?.tokensUsed).toBe(160);
+  expect(getThreadGoal('step-finish-thread')?.inputTokensUsed).toBe(130);
+  expect(getThreadGoal('step-finish-thread')?.cachedInputTokensUsed).toBe(20);
+  expect(getThreadGoal('step-finish-thread')?.outputTokensUsed).toBe(30);
 });
 
 test('manual stop pauses active goal and suppresses idle continuation injection', async () => {

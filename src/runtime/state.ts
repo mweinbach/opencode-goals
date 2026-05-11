@@ -79,19 +79,23 @@ export async function accountGoalProgress(
     return false;
   }
 
-  const { tokenDelta, timeDeltaSeconds, expectedGoalId } = accountTurnProgress(
+  const { tokenDelta, tokenBreakdownDelta, timeDeltaSeconds, expectedGoalId } = accountTurnProgress(
     state.accounting,
     currentTokenUsage
   );
 
-  if (tokenDelta === 0 && timeDeltaSeconds === 0) {
+  if (
+    tokenDelta === 0 &&
+    tokenBreakdownDelta.cachedInputTokens === 0 &&
+    timeDeltaSeconds === 0
+  ) {
     return false;
   }
 
   const outcome = accountThreadGoalUsage(
     sessionId,
     timeDeltaSeconds,
-    tokenDelta,
+    tokenBreakdownDelta,
     'active_only',
     expectedGoalId ?? undefined
   );

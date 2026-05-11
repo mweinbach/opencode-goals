@@ -117,17 +117,19 @@ export const OpenCodeGoalsPlugin: Plugin = async ({ client }) => {
       const goal = getThreadGoal(input.sessionID);
       if (!goal || goal.status !== 'active') return;
 
-      const remainingTokens =
+      const budgetContext =
         goal.tokenBudget !== null
-          ? Math.max(0, goal.tokenBudget - goal.tokensUsed)
-          : 'unbounded';
+          ? `Token budget: ${goal.tokenBudget}\n` +
+            `Budget used: ${goal.tokensUsed} / ${goal.tokenBudget}\n` +
+            `Remaining: ${Math.max(0, goal.tokenBudget - goal.tokensUsed)}\n`
+          : '';
 
       output.context.push(
         `## Active Goal\n` +
           `Objective: ${goal.objective}\n` +
           `Status: ${goal.status}\n` +
-          `Tokens used: ${goal.tokensUsed}${goal.tokenBudget !== null ? ` / ${goal.tokenBudget}` : ''}\n` +
-          `Remaining: ${remainingTokens}\n` +
+          `Tokens used: ${goal.tokensUsed} billable (${formatTokenBreakdown(goal)})\n` +
+          budgetContext +
           `Time: ${goal.timeUsedSeconds}s\n\n` +
           `This goal is in progress and should be preserved across compaction.`
       );
@@ -484,19 +486,33 @@ function parseCreateGoalArguments(
 function formatGoalForCommand(goal: ReturnType<typeof getThreadGoal>): string {
   if (!goal) return 'No goal is set for this session.';
 
-  const budget =
+  const budgetLine =
     goal.tokenBudget === null
-      ? `tokens used: ${goal.tokensUsed}; token budget: none`
-      : `tokens used: ${goal.tokensUsed} of ${goal.tokenBudget}; remaining: ${Math.max(
+      ? null
+      : `budget: ${goal.tokensUsed} of ${goal.tokenBudget}; remaining: ${Math.max(
           0,
           goal.tokenBudget - goal.tokensUsed
         )}`;
 
-  return [
+  const lines = [
     `Objective: ${goal.objective}`,
     `Status: ${goal.status}`,
-    `Usage: ${budget}; time used: ${goal.timeUsedSeconds} seconds`,
-  ].join('\n');
+    `Usage: ${goal.tokensUsed} billable tokens (${formatTokenBreakdown(
+      goal
+    )}); time used: ${goal.timeUsedSeconds} seconds`,
+  ];
+
+  if (budgetLine) lines.push(`Budget: ${budgetLine}`);
+
+  return lines.join('\n');
+}
+
+function formatTokenBreakdown(goal: {
+  inputTokensUsed: number;
+  cachedInputTokensUsed: number;
+  outputTokensUsed: number;
+}): string {
+  return `input ${goal.inputTokensUsed}, cached ${goal.cachedInputTokensUsed}, output ${goal.outputTokensUsed}`;
 }
 
 async function logGoalToolOutcome(

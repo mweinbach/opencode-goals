@@ -22,6 +22,9 @@ export type GoalState = Pick<
   | 'status'
   | 'tokenBudget'
   | 'tokensUsed'
+  | 'inputTokensUsed'
+  | 'cachedInputTokensUsed'
+  | 'outputTokensUsed'
   | 'timeUsedSeconds'
   | 'updatedAt'
 >;
@@ -87,8 +90,36 @@ const tui: TuiPlugin = async (api) => {
         onConfirm={(value: string) => {
           const objective = value.trim();
           if (!objective) return;
+          openBudgetDialog(objective);
+        }}
+        onCancel={() => {
           api.ui.dialog.clear();
-          void createGoal(objective);
+        }}
+      />
+    ));
+  }
+
+  function openBudgetDialog(objective: string): void {
+    api.ui.dialog.replace(() => (
+      <api.ui.DialogPrompt
+        title="Token Budget"
+        placeholder="Optional tokens, blank for none"
+        onConfirm={(value: string) => {
+          let tokenBudget: number | null;
+          try {
+            tokenBudget = parseOptionalTokenBudget(value);
+          } catch (error) {
+            api.ui.toast({
+              variant: 'error',
+              message: error instanceof Error ? error.message : 'Invalid token budget',
+              duration: 3000,
+            });
+            openBudgetDialog(objective);
+            return;
+          }
+
+          api.ui.dialog.clear();
+          void createGoal(objective, tokenBudget);
         }}
         onCancel={() => {
           api.ui.dialog.clear();
@@ -196,8 +227,13 @@ const tui: TuiPlugin = async (api) => {
             </text>
             <text fg={api.theme.current.text}>{truncate(current.objective, 40)}</text>
             {progressLine(current)}
+            {current.tokenBudget !== null && (
+              <text fg={api.theme.current.textMuted}>
+                {budgetLine(current)}
+              </text>
+            )}
             <text fg={api.theme.current.textMuted}>
-              {tokenLine(current)}
+              {tokenBreakdownLine(current)}
             </text>
             <text fg={api.theme.current.textMuted}>
               {formatTime(timeUsedSeconds)}
@@ -258,17 +294,17 @@ const tui: TuiPlugin = async (api) => {
     clearInterval(clockInterval);
   });
 
-  async function createGoal(objective: string): Promise<void> {
+  async function createGoal(objective: string, tokenBudget: number | null): Promise<void> {
     try {
       const { sessionId, created } = await ensureGoalSession(objective);
 
       const existing = getThreadGoal(sessionId);
       if (existing) {
-        confirmReplaceGoal(sessionId, objective);
+        confirmReplaceGoal(sessionId, objective, tokenBudget);
         return;
       }
 
-      const next = createOrReplaceGoal(sessionId, objective);
+      const next = createOrReplaceGoal(sessionId, objective, tokenBudget);
       const started = await startGoalTurnIfIdle(next).catch(() => false);
       await fetchGoal(sessionId);
       api.ui.toast({
@@ -315,9 +351,13 @@ const tui: TuiPlugin = async (api) => {
     }
   }
 
-  function createOrReplaceGoal(sessionId: string, objective: string): ThreadGoal {
+  function createOrReplaceGoal(
+    sessionId: string,
+    objective: string,
+    tokenBudget: number | null
+  ): ThreadGoal {
     validateThreadGoalObjective(objective);
-    const next = replaceThreadGoal(sessionId, objective, 'active', null);
+    const next = replaceThreadGoal(sessionId, objective, 'active', tokenBudget);
     resumePrompted.delete(sessionId);
     return next;
   }
@@ -344,9 +384,13 @@ const tui: TuiPlugin = async (api) => {
     return true;
   }
 
-  async function replaceExistingGoal(sessionId: string, objective: string): Promise<void> {
+  async function replaceExistingGoal(
+    sessionId: string,
+    objective: string,
+    tokenBudget: number | null
+  ): Promise<void> {
     try {
-      const next = createOrReplaceGoal(sessionId, objective);
+      const next = createOrReplaceGoal(sessionId, objective, tokenBudget);
       const started = await startGoalTurnIfIdle(next).catch(() => false);
       await fetchGoal(sessionId);
       api.ui.toast({
@@ -361,14 +405,14 @@ const tui: TuiPlugin = async (api) => {
     }
   }
 
-  function confirmReplaceGoal(sessionId: string, objective: string): void {
+  function confirmReplaceGoal(sessionId: string, objective: string, tokenBudget: number | null): void {
     api.ui.dialog.replace(() => (
       <api.ui.DialogConfirm
         title="Replace current goal?"
         message="This session already has a goal. Replacing it resets token and time accounting."
         onConfirm={() => {
           api.ui.dialog.clear();
-          void replaceExistingGoal(sessionId, objective);
+          void replaceExistingGoal(sessionId, objective, tokenBudget);
         }}
         onCancel={() => {
           api.ui.dialog.clear();
@@ -429,7 +473,7 @@ const tui: TuiPlugin = async (api) => {
           {
             title: truncate(current.objective, 70),
             value: 'status',
-            description: `${current.status} | ${tokenLine(current)} | ${formatTime(
+            description: `${current.status} | ${summaryUsageLine(current)} | ${formatTime(
               current.timeUsedSeconds
             )}`,
             disabled: true,
@@ -518,15 +562,42 @@ function truncate(str: string, maxLen: number): string {
   return `${str.slice(0, maxLen - 1)}…`;
 }
 
-function tokenLine(goal: GoalState): string {
-  if (goal.tokenBudget !== null) {
-    return `${formatNumber(goal.tokensUsed)} / ${formatNumber(goal.tokenBudget)} tokens`;
+function parseOptionalTokenBudget(value: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  const tokenBudget = Number.parseInt(trimmed, 10);
+  if (!Number.isInteger(tokenBudget) || tokenBudget <= 0 || String(tokenBudget) !== trimmed) {
+    throw new Error('Token budget must be a positive integer, or blank for no budget');
   }
-  return `${formatNumber(goal.tokensUsed)} tokens`;
+
+  return tokenBudget;
+}
+
+function budgetLine(goal: GoalState): string {
+  if (goal.tokenBudget === null) return '';
+
+  const pct = Math.min(100, Math.round((goal.tokensUsed / goal.tokenBudget) * 100));
+  return `budget ${formatNumber(goal.tokensUsed)} / ${formatNumber(goal.tokenBudget)} (${pct}%)`;
+}
+
+export function tokenBreakdownLine(goal: GoalState): string {
+  return [
+    `input ${formatNumber(goal.inputTokensUsed)}`,
+    `cached ${formatNumber(goal.cachedInputTokensUsed)}`,
+    `output ${formatNumber(goal.outputTokensUsed)}`,
+  ].join(' · ');
+}
+
+function summaryUsageLine(goal: GoalState): string {
+  if (goal.tokenBudget !== null) {
+    return `${budgetLine(goal)} | ${tokenBreakdownLine(goal)}`;
+  }
+  return tokenBreakdownLine(goal);
 }
 
 function compactUsageLine(goal: GoalState, timeUsedSeconds = goal.timeUsedSeconds): string {
-  if (goal.tokenBudget !== null) return tokenLine(goal);
+  if (goal.tokenBudget !== null) return budgetLine(goal);
   return formatTime(timeUsedSeconds);
 }
 
@@ -590,6 +661,9 @@ function sameGoal(left: GoalState | null, right: GoalState | null): boolean {
     left.status === right.status &&
     left.tokenBudget === right.tokenBudget &&
     left.tokensUsed === right.tokensUsed &&
+    left.inputTokensUsed === right.inputTokensUsed &&
+    left.cachedInputTokensUsed === right.cachedInputTokensUsed &&
+    left.outputTokensUsed === right.outputTokensUsed &&
     left.timeUsedSeconds === right.timeUsedSeconds &&
     left.updatedAt === right.updatedAt
   );

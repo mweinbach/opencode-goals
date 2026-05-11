@@ -8,7 +8,11 @@ export interface ThreadGoal {
   objective: string;
   status: ThreadGoalStatus;
   tokenBudget: number | null;
+  /** Billable goal tokens: non-cached input + output. Cached input is tracked separately. */
   tokensUsed: number;
+  inputTokensUsed: number;
+  cachedInputTokensUsed: number;
+  outputTokensUsed: number;
   timeUsedSeconds: number;
   createdAt: number;
   updatedAt: number;
@@ -38,6 +42,13 @@ export interface TokenUsage {
     read: number;
     write: number;
   };
+}
+
+export interface ThreadGoalTokenDelta {
+  billableTokens: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
 }
 
 export interface GoalTurnAccountingSnapshot {

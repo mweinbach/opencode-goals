@@ -119,7 +119,8 @@ Or via file path:
 
 ### Sidebar Widget
 - **Active goal display** in the sidebar with status icon, objective, and progress
-- **Token progress bar** (when budget is set) showing usage percentage
+- **Token breakdown** showing non-cached input, cached input, and output separately
+- **Token progress bar** only when a budget is set, showing budget utilization percentage
 - **Time elapsed** counter
 - **Summary actions**: Pause / Resume / Replace / Clear from the command palette
 
@@ -128,7 +129,7 @@ Or via file path:
 
 ### Command Palette
 Press `Ctrl+P` or type `/` to access:
-- `Goals: Create Goal` — Opens a dialog to set an objective
+- `Goals: Create Goal` — Opens dialogs to set an objective and optional token budget. Blank budget means no budget.
 - `Goals: Summary` or `/goal` — Opens the current goal summary/actions dialog
 - `Goals: Pause/Resume Goal` — Toggle goal state
 - `Goals: Clear Goal` — Remove the active goal
@@ -146,8 +147,8 @@ The plugin registers three tools the model can call:
 
 | Tool | Description |
 |------|-------------|
-| `get_goal` | Get current goal state including tokens used, time elapsed, and remaining budget |
-| `create_goal` | Create a new goal (fails if one already exists). Params: `objective` (string, max 4000 chars), `token_budget` (optional positive int) |
+| `get_goal` | Get current goal state including split token usage, time elapsed, and remaining budget when set |
+| `create_goal` | Create a new goal (fails if one already exists). Params: `objective` (string, max 4000 chars), `token_budget` (optional positive int; omitted means no budget) |
 | `update_goal` | **Complete only** — marks goal as achieved. Rejects other status changes. |
 
 ### TUI Commands
@@ -176,6 +177,9 @@ thread_goals (
   status,
   token_budget,
   tokens_used,
+  input_tokens_used,
+  cached_input_tokens_used,
+  output_tokens_used,
   time_used_seconds,
   created_at_ms,
   updated_at_ms
